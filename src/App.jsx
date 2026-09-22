@@ -40,6 +40,7 @@ import {
   Sparkles,
   Tag,
   CheckCircle,
+  Settings,
   HelpCircle,
   TrendingDown,
   Layers
@@ -219,10 +220,25 @@ const INITIAL_PRODUCTS = [
 ];
 
 const INITIAL_CUSTOMERS = [
-  { id: 'C-01', name: 'Aling Nena', phone: '09171234567', address: 'Block 2 Lot 5', balance: 245.00, notes: 'Suki, pays every Friday' },
-  { id: 'C-02', name: 'Kuya Cardo', phone: '09289876543', address: 'Near Basketball Court', balance: 120.00, notes: ' Tricycle driver' },
-  { id: 'C-03', name: 'Mang Juan', phone: '09085551234', address: 'Street 4 Corner', balance: 0.00, notes: 'Pays in exact cash always' }
+  { id: 'C-01', name: 'Aling Nena', phone: '09171234567', address: 'Block 2 Lot 5', balance: 245.00, notes: 'Suki, pays every Friday', ledger: [
+    { id: 'L-01', type: 'sale', amount: 120.00, date: new Date(Date.now() - 86400000 * 4).toISOString(), description: 'Utang for groceries', orderId: 'TRX-8815' },
+    { id: 'L-02', type: 'sale', amount: 125.00, date: new Date(Date.now() - 86400000 * 2).toISOString(), description: 'Utang for household needs', orderId: 'TRX-8820' },
+    { id: 'L-03', type: 'payment', amount: 0.00, date: new Date(Date.now() - 86400000).toISOString(), description: 'Initial payment', orderId: 'PMT-1' }
+  ] },
+  { id: 'C-02', name: 'Kuya Cardo', phone: '09289876543', address: 'Near Basketball Court', balance: 120.00, notes: ' Tricycle driver', ledger: [
+    { id: 'L-04', type: 'sale', amount: 120.00, date: new Date(Date.now() - 86400000 * 3).toISOString(), description: 'Rice and canned goods', orderId: 'TRX-8810' }
+  ] },
+  { id: 'C-03', name: 'Mang Juan', phone: '09085551234', address: 'Street 4 Corner', balance: 0.00, notes: 'Pays in exact cash always', ledger: [] }
 ];
+
+const normalizeCustomer = (customer = {}) => ({
+  ...customer,
+  balance: Number(customer.balance) || 0,
+  ledger: Array.isArray(customer.ledger) ? customer.ledger.map((entry) => ({
+    ...entry,
+    amount: Number(entry.amount) || 0
+  })) : []
+});
 
 const DEFAULT_STORE_PROFILE = {
   storeName: 'Tindahan ni Ate Inday',
@@ -291,7 +307,7 @@ export default function App() {
 
   const [products, setProducts] = useState(INITIAL_PRODUCTS);
   const [categories, setCategories] = useState(INITIAL_CATEGORIES);
-  const [customers, setCustomers] = useState(INITIAL_CUSTOMERS);
+  const [customers, setCustomers] = useState(INITIAL_CUSTOMERS.map(normalizeCustomer));
   const [salesHistory, setSalesHistory] = useState(INITIAL_SALES);
 
   const loadDatabase = async () => {
@@ -306,7 +322,7 @@ export default function App() {
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
       setProducts(data.products || INITIAL_PRODUCTS);
       setCategories(data.categories || INITIAL_CATEGORIES);
-      setCustomers(data.customers || INITIAL_CUSTOMERS);
+      setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
       setSalesHistory(data.sales || INITIAL_SALES);
     } catch (error) {
       console.error(error);
@@ -315,7 +331,7 @@ export default function App() {
       setStoreProfile(DEFAULT_STORE_PROFILE);
       setProducts(INITIAL_PRODUCTS);
       setCategories(INITIAL_CATEGORIES);
-      setCustomers(INITIAL_CUSTOMERS);
+      setCustomers(INITIAL_CUSTOMERS.map(normalizeCustomer));
       setSalesHistory(INITIAL_SALES);
     } finally {
       setIsDataLoaded(true);
@@ -382,7 +398,7 @@ export default function App() {
   };
 
   // UI Navigation Tabs
-  const [activeTab, setActiveTab] = useState('register'); // 'register', 'products', 'utang', 'sales', 'analytics'
+  const [activeTab, setActiveTab] = useState('register'); // 'register', 'products', 'utang', 'sales', 'analytics', 'settings'
 
   // Cart State for Register View
   const [cart, setCart] = useState([]);
@@ -449,7 +465,7 @@ export default function App() {
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
       setProducts(data.products || INITIAL_PRODUCTS);
       setCategories(data.categories || INITIAL_CATEGORIES);
-      setCustomers(data.customers || INITIAL_CUSTOMERS);
+      setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
       setSalesHistory(data.sales || INITIAL_SALES);
       showToast('Local database reset to initial setup');
     } catch (error) {
@@ -601,11 +617,25 @@ export default function App() {
     // 2. If Utang payment, add to Customer balance ledger
     if (paymentMethod === 'Utang' && selectedUtangCustomer) {
       setCustomers((prev) =>
-        prev.map((cust) =>
-          cust.id === selectedUtangCustomer
-            ? { ...cust, balance: cust.balance + totalAmount }
-            : cust
-        )
+        prev.map((cust) => {
+          if (cust.id !== selectedUtangCustomer) return normalizeCustomer(cust);
+          const nextBalance = (Number(cust.balance) || 0) + totalAmount;
+          return normalizeCustomer({
+            ...cust,
+            balance: nextBalance,
+            ledger: [
+              {
+                id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+                type: 'sale',
+                amount: totalAmount,
+                date: new Date().toISOString(),
+                description: `Utang for ${customerName}`,
+                orderId: newOrder.id
+              },
+              ...(Array.isArray(cust.ledger) ? cust.ledger : [])
+            ]
+          });
+        })
       );
     }
 
@@ -649,11 +679,25 @@ export default function App() {
     // Deduct Utang if it was an Utang order
     if (order.paymentMethod === 'Utang' && order.customerId) {
       setCustomers((prev) =>
-        prev.map((cust) =>
-          cust.id === order.customerId
-            ? { ...cust, balance: Math.max(0, cust.balance - order.totalAmount) }
-            : cust
-        )
+        prev.map((cust) => {
+          if (cust.id !== order.customerId) return normalizeCustomer(cust);
+          const nextBalance = Math.max(0, (Number(cust.balance) || 0) - order.totalAmount);
+          return normalizeCustomer({
+            ...cust,
+            balance: nextBalance,
+            ledger: [
+              {
+                id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+                type: 'voided_sale',
+                amount: order.totalAmount,
+                date: new Date().toISOString(),
+                description: `Voided utang sale ${order.id}`,
+                orderId: order.id
+              },
+              ...(Array.isArray(cust.ledger) ? cust.ledger : [])
+            ]
+          });
+        })
       );
     }
 
@@ -712,12 +756,13 @@ export default function App() {
 
   // Utang Customer CRUD & Payment Handlers
   const handleSaveCustomer = (custData) => {
-    const newCust = {
+    const newCust = normalizeCustomer({
       ...custData,
       id: `C-${Math.floor(10 + Math.random() * 90)}`,
-      balance: parseFloat(custData.balance) || 0
-    };
-    setCustomers((prev) => [newCust, ...prev]);
+      balance: parseFloat(custData.balance) || 0,
+      ledger: []
+    });
+    setCustomers((prev) => [newCust, ...prev.map(normalizeCustomer)]);
     setIsCustomerModalOpen(false);
     showToast(`Registered Suki: ${custData.name}`);
   };
@@ -730,11 +775,24 @@ export default function App() {
     }
 
     setCustomers((prev) =>
-      prev.map((c) =>
-        c.id === selectedCustomerForPayment.id
-          ? { ...c, balance: Math.max(0, c.balance - amt) }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id !== selectedCustomerForPayment.id) return normalizeCustomer(c);
+        return normalizeCustomer({
+          ...c,
+          balance: Math.max(0, (Number(c.balance) || 0) - amt),
+          ledger: [
+            {
+              id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              type: 'payment',
+              amount: amt,
+              date: new Date().toISOString(),
+              description: `Payment received from ${c.name}`,
+              orderId: `PMT-${Date.now()}`
+            },
+            ...(Array.isArray(c.ledger) ? c.ledger : [])
+          ]
+        });
+      })
     );
 
     showToast(`Received ₱${amt.toFixed(2)} pabayad from ${selectedCustomerForPayment.name}!`);
@@ -873,24 +931,6 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex items-center justify-between px-4 py-3 text-xs font-semibold gap-2">
-        <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-white hover:bg-amber-600 transition shadow-sm"
-        >
-          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-          <span>{theme === 'dark' ? 'Light Theme' : 'Dark Theme'}</span>
-        </button>
-
-        <button
-          onClick={handleResetDatabase}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition shadow-sm"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Reset DB</span>
-        </button>
-      </div>
-
       <div className={`relative w-full flex-1 flex flex-col overflow-hidden ${
         theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'
       }`}>
@@ -997,6 +1037,15 @@ export default function App() {
               sales={salesHistory}
               products={products}
               customers={customers}
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsView
+              theme={theme}
+              setTheme={setTheme}
+              storeProfile={storeProfile}
+              onResetDatabase={handleResetDatabase}
             />
           )}
         </div>
@@ -1162,6 +1211,13 @@ export default function App() {
             label="Report"
             isActive={activeTab === 'analytics'}
             onClick={() => setActiveTab('analytics')}
+            theme={theme}
+          />
+          <NavTabButton
+            icon={Settings}
+            label="Settings"
+            isActive={activeTab === 'settings'}
+            onClick={() => setActiveTab('settings')}
             theme={theme}
           />
         </div>
@@ -1931,19 +1987,23 @@ function RestockModal({ theme, product, restockQty, setRestockQty, onConfirm, on
 }
 
 function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
-  const totalOutstandingUtang = customers.reduce((a, b) => a + b.balance, 0);
+  const totalOutstandingUtang = customers.reduce((a, b) => a + (Number(b.balance) || 0), 0);
+  const [expandedCustomerId, setExpandedCustomerId] = useState(customers[0]?.id ?? null);
+
+  const toggleCustomer = (customerId) => {
+    setExpandedCustomerId((prev) => (prev === customerId ? null : customerId));
+  };
 
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
-      {/* Overview Banner */}
       <div className="p-4 rounded-2xl bg-gradient-to-r from-red-600 to-amber-600 text-white space-y-1 shadow-md">
-        <span className="text-xs font-bold opacity-90">Kabuuan ng Pautang sa Kapitbahay</span>
+        <span className="text-xs font-bold opacity-90">Kabuuan ng Pautang</span>
         <div className="text-2xl font-black">₱{totalOutstandingUtang.toFixed(2)}</div>
-        <p className="text-[10px] opacity-80">{customers.filter((c) => c.balance > 0).length} Suki ang may balanseng utang</p>
+        <p className="text-[10px] opacity-80">{customers.filter((c) => (Number(c.balance) || 0) > 0).length} Suki ang may balanseng utang</p>
       </div>
 
       <div className="flex items-center justify-between">
-        <h2 className="font-black text-sm">Listahan ng Suki (Utang Ledger)</h2>
+        <h2 className="font-black text-sm">Listahan ng Suki at Utang</h2>
         <button
           onClick={onAddCustomer}
           className="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-xl font-bold text-xs flex items-center space-x-1"
@@ -1954,37 +2014,154 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       <div className="space-y-2">
-        {customers.map((c) => (
-          <div
-            key={c.id}
-            className={`p-3 rounded-2xl border flex items-center justify-between ${
-              theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'
-            }`}
-          >
-            <div>
-              <h4 className="font-bold text-xs">{c.name}</h4>
-              <p className="text-[10px] text-slate-400">{c.phone} • {c.notes}</p>
-            </div>
+        {customers.map((c) => {
+          const customerLedger = Array.isArray(c.ledger) ? c.ledger : [];
+          const debtEntries = customerLedger.filter((entry) => entry.type === 'sale' || entry.type === 'voided_sale');
+          const paymentEntries = customerLedger.filter((entry) => entry.type === 'payment');
+          const isOpen = expandedCustomerId === c.id;
 
-            <div className="text-right flex items-center space-x-2">
-              <div>
-                <span className={`text-xs font-black block ${c.balance > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                  ₱{c.balance.toFixed(2)}
-                </span>
-                <span className="text-[9px] text-slate-400">Utang</span>
+          return (
+            <div
+              key={c.id}
+              className={`p-3 rounded-2xl border ${
+                theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={() => toggleCustomer(c.id)}
+                  className="flex-1 text-left"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h4 className="font-black text-xs">{c.name}</h4>
+                      <p className="text-[10px] text-slate-400">{c.phone || 'No contact'} • {c.notes || 'No notes'}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className={`text-xs font-black block ${ (Number(c.balance) || 0) > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                        ₱{(Number(c.balance) || 0).toFixed(2)}
+                      </span>
+                      <span className="text-[9px] text-slate-400">Outstanding</span>
+                    </div>
+                  </div>
+                </button>
+
+                {(Number(c.balance) || 0) > 0 && (
+                  <button
+                    onClick={() => onPabayad(c)}
+                    className="bg-emerald-600 text-white px-2.5 py-1 rounded-xl font-bold text-[10px] shadow-xs"
+                  >
+                    Magbayad
+                  </button>
+                )}
               </div>
 
-              {c.balance > 0 && (
-                <button
-                  onClick={() => onPabayad(c)}
-                  className="bg-emerald-600 text-white px-2.5 py-1 rounded-xl font-bold text-[10px] shadow-xs"
-                >
-                  Magbayad
-                </button>
+              {isOpen && (
+                <div className="mt-3 border-t border-slate-200 dark:border-slate-700 pt-3 space-y-3">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div className={`rounded-xl p-2 ${theme === 'dark' ? 'bg-slate-800' : 'bg-red-50'}`}>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-red-500">Utang</span>
+                        <span className="text-[10px] font-bold text-slate-500">{debtEntries.length} entry</span>
+                      </div>
+                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                        {debtEntries.length > 0 ? debtEntries.map((entry) => (
+                          <div key={entry.id} className="flex items-start justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700 pb-1">
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-700 dark:text-slate-200">{entry.description}</p>
+                              <p className="text-[9px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {entry.orderId}</p>
+                            </div>
+                            <span className="text-[10px] font-black text-red-500">₱{Number(entry.amount || 0).toFixed(2)}</span>
+                          </div>
+                        )) : (
+                          <p className="text-[10px] text-slate-400">Walang utang na naitala.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl p-2 ${theme === 'dark' ? 'bg-slate-800' : 'bg-emerald-50'}`}>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-emerald-500">Payments</span>
+                        <span className="text-[10px] font-bold text-slate-500">{paymentEntries.length} entry</span>
+                      </div>
+                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                        {paymentEntries.length > 0 ? paymentEntries.map((entry) => (
+                          <div key={entry.id} className="flex items-start justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700 pb-1">
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-700 dark:text-slate-200">{entry.description}</p>
+                              <p className="text-[9px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {entry.orderId}</p>
+                            </div>
+                            <span className="text-[10px] font-black text-emerald-500">₱{Number(entry.amount || 0).toFixed(2)}</span>
+                          </div>
+                        )) : (
+                          <p className="text-[10px] text-slate-400">Walang bayad na naitala.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsView({ theme, setTheme, storeProfile, onResetDatabase }) {
+  return (
+    <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
+      <div className={`rounded-2xl border p-4 ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500">System</p>
+            <h2 className="mt-1 text-lg font-black">Settings</h2>
           </div>
-        ))}
+          <div className="rounded-full bg-amber-100 p-2 text-amber-600">
+            <Settings className="w-4 h-4" />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="flex w-full items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-left text-sm font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+          >
+            <span>{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}</span>
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={onResetDatabase}
+            className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          >
+            <span>Reset local database</span>
+            <RotateCcw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className={`rounded-2xl border p-4 ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Store profile</p>
+        <div className="mt-3 space-y-2 text-sm">
+          <div className="flex justify-between gap-3">
+            <span className="text-slate-500">Store</span>
+            <span className="font-bold text-right">{storeProfile.storeName}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-slate-500">Owner</span>
+            <span className="font-bold text-right">{storeProfile.ownerName}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-slate-500">Location</span>
+            <span className="font-bold text-right">{storeProfile.location}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-slate-500">Currency</span>
+            <span className="font-bold text-right">{storeProfile.currency}</span>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -68,7 +68,8 @@
       "phone": "09171234567",
       "address": "Block 2 Lot 5",
       "balance": 245,
-      "notes": "Suki, pays every Friday"
+      "notes": "Suki, pays every Friday",
+      "ledger": []
     },
     {
       "id": "C-02",
@@ -76,7 +77,8 @@
       "phone": "09289876543",
       "address": "Near Basketball Court",
       "balance": 120,
-      "notes": " Tricycle driver"
+      "notes": " Tricycle driver",
+      "ledger": []
     },
     {
       "id": "C-03",
@@ -84,7 +86,8 @@
       "phone": "09085551234",
       "address": "Street 4 Corner",
       "balance": 0,
-      "notes": "Pays in exact cash always"
+      "notes": "Pays in exact cash always",
+      "ledger": []
     }
   ],
   "sales": [
