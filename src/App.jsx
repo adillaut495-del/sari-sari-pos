@@ -262,9 +262,9 @@ const INITIAL_SALES = [
 ];
 
 export default function App() {
-  // Theme & connection state
-  const [theme, setTheme] = useState(() => localStorage.getItem('sari_theme') || 'light');
+  const [theme, setTheme] = useState('light');
   const [isOffline, setIsOffline] = useState(() => !navigator.onLine);
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   useEffect(() => {
     const handleConnection = () => setIsOffline(!navigator.onLine);
@@ -277,26 +277,52 @@ export default function App() {
     };
   }, []);
 
-  // Core Data State loaded from LocalStorage
-  const [products, setProducts] = useState(() => {
-    const saved = localStorage.getItem('sari_products');
-    return saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
-  });
+  const [products, setProducts] = useState(INITIAL_PRODUCTS);
+  const [categories, setCategories] = useState(INITIAL_CATEGORIES);
+  const [customers, setCustomers] = useState(INITIAL_CUSTOMERS);
+  const [salesHistory, setSalesHistory] = useState(INITIAL_SALES);
 
-  const [categories, setCategories] = useState(() => {
-    const saved = localStorage.getItem('sari_categories');
-    return saved ? JSON.parse(saved) : INITIAL_CATEGORIES;
-  });
+  const loadDatabase = async () => {
+    try {
+      const response = await fetch('/api/db');
+      if (!response.ok) {
+        throw new Error('Failed to load database');
+      }
+      const data = await response.json();
+      setTheme(data.theme || 'light');
+      setProducts(data.products || INITIAL_PRODUCTS);
+      setCategories(data.categories || INITIAL_CATEGORIES);
+      setCustomers(data.customers || INITIAL_CUSTOMERS);
+      setSalesHistory(data.sales || INITIAL_SALES);
+    } catch (error) {
+      console.error(error);
+      setTheme('light');
+      setProducts(INITIAL_PRODUCTS);
+      setCategories(INITIAL_CATEGORIES);
+      setCustomers(INITIAL_CUSTOMERS);
+      setSalesHistory(INITIAL_SALES);
+    } finally {
+      setIsDataLoaded(true);
+    }
+  };
 
-  const [customers, setCustomers] = useState(() => {
-    const saved = localStorage.getItem('sari_customers');
-    return saved ? JSON.parse(saved) : INITIAL_CUSTOMERS;
-  });
+  useEffect(() => {
+    loadDatabase();
+  }, []);
 
-  const [salesHistory, setSalesHistory] = useState(() => {
-    const saved = localStorage.getItem('sari_sales');
-    return saved ? JSON.parse(saved) : INITIAL_SALES;
-  });
+  const persistDatabase = async (nextState) => {
+    if (!isDataLoaded) return;
+
+    try {
+      await fetch('/api/db', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextState)
+      });
+    } catch (error) {
+      console.error('Database save failed:', error);
+    }
+  };
 
   // UI Navigation Tabs
   const [activeTab, setActiveTab] = useState('register'); // 'register', 'products', 'utang', 'sales', 'analytics'
@@ -339,26 +365,37 @@ export default function App() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  // Sync state changes to LocalStorage for persistence
   useEffect(() => {
-    localStorage.setItem('sari_theme', theme);
-  }, [theme]);
+    if (!isDataLoaded) return;
 
-  useEffect(() => {
-    localStorage.setItem('sari_products', JSON.stringify(products));
-  }, [products]);
+    persistDatabase({
+      theme,
+      products,
+      categories,
+      customers,
+      sales: salesHistory
+    });
+  }, [theme, products, categories, customers, salesHistory, isDataLoaded]);
 
-  useEffect(() => {
-    localStorage.setItem('sari_categories', JSON.stringify(categories));
-  }, [categories]);
+  const handleResetDatabase = async () => {
+    if (!window.confirm('Reset the local server database to a fresh startup setup? This will clear all products, sales, and customer data.')) {
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem('sari_customers', JSON.stringify(customers));
-  }, [customers]);
-
-  useEffect(() => {
-    localStorage.setItem('sari_sales', JSON.stringify(salesHistory));
-  }, [salesHistory]);
+    try {
+      const response = await fetch('/api/reset-db', { method: 'POST' });
+      const data = await response.json();
+      setTheme(data.theme || 'light');
+      setProducts(data.products || INITIAL_PRODUCTS);
+      setCategories(data.categories || INITIAL_CATEGORIES);
+      setCustomers(data.customers || INITIAL_CUSTOMERS);
+      setSalesHistory(data.sales || INITIAL_SALES);
+      showToast('Local database reset to initial setup');
+    } catch (error) {
+      console.error('Reset failed:', error);
+      showToast('Database reset failed', 'error');
+    }
+  };
 
   // Cart Calculations
   const subtotal = useMemo(() => {
@@ -653,13 +690,21 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex items-center justify-between px-4 py-3 text-xs font-semibold">
+      <div className="flex items-center justify-between px-4 py-3 text-xs font-semibold gap-2">
         <button
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-white hover:bg-amber-600 transition shadow-sm"
         >
           {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           <span>{theme === 'dark' ? 'Light Theme' : 'Dark Theme'}</span>
+        </button>
+
+        <button
+          onClick={handleResetDatabase}
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition shadow-sm"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          <span>Reset DB</span>
         </button>
       </div>
 

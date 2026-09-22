@@ -8,6 +8,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4173,
     strictPort: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:4174',
+        changeOrigin: true,
+      },
+    },
     hmr: {
       host: 'localhost',
       port: 4173,
