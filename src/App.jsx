@@ -2037,6 +2037,8 @@ function RestockModal({ theme, product, restockQty, setRestockQty, onConfirm, on
 }
 
 function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+
   const totalOutstandingUtang = customers.reduce((a, b) => a + (Number(b.balance) || 0), 0);
 
   const allLedgerEntries = customers
@@ -2051,6 +2053,10 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
     )
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
+  const selectedCustomerEntries = selectedCustomer
+    ? [...(Array.isArray(selectedCustomer.ledger) ? selectedCustomer.ledger : [])].sort((a, b) => new Date(b.date) - new Date(a.date))
+    : [];
+
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
       <div className="p-4 rounded-2xl bg-gradient-to-r from-red-600 to-amber-600 text-white space-y-1 shadow-md">
@@ -2060,7 +2066,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       <div className="flex items-center justify-between">
-        <h2 className="font-black text-sm">Listahan ng Utang at Bayad</h2>
+        <h2 className="font-black text-sm">Listahan ng Suki</h2>
         <button
           onClick={onAddCustomer}
           className="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-xl font-bold text-xs flex items-center space-x-1"
@@ -2071,61 +2077,137 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       <div className="space-y-2">
-        {allLedgerEntries.length === 0 ? (
+        {customers.length === 0 ? (
           <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
-            Walang utang o bayad na naitala pa.
+            Walang suki na naitala pa.
           </div>
         ) : (
-          allLedgerEntries.map((entry) => {
-            const isPayment = entry.type === 'payment';
-            const amountText = `${isPayment ? 'Payment' : 'Utang'} • ₱${Number(entry.amount || 0).toFixed(2)}`;
+          customers.map((customer) => {
+            const balance = Number(customer.balance) || 0;
+            const ledger = Array.isArray(customer.ledger) ? customer.ledger : [];
+            const latestEntry = [...ledger].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
 
             return (
-              <div
-                key={entry.id}
-                className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'}`}
+              <button
+                key={customer.id}
+                type="button"
+                onClick={() => setSelectedCustomer(customer)}
+                className={`w-full rounded-2xl border p-3 text-left transition ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'} hover:border-amber-400`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isPayment ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                        {isPayment ? 'Payment' : 'Utang'}
+                      <h3 className="font-black text-sm">{customer.name}</h3>
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${balance > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                        {balance > 0 ? 'May Utang' : 'Lutong Buwis'}
                       </span>
-                      <span className="text-[10px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {new Date(entry.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
-
-                    <h4 className="mt-2 font-black text-xs">{entry.customerName}</h4>
-                    <p className="text-[10px] text-slate-400">{entry.customerPhone}</p>
-
-                    <div className="mt-2 rounded-xl bg-slate-100 dark:bg-slate-800 p-2">
-                      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{entry.description}</p>
-                      {Array.isArray(entry.items) && entry.items.length > 0 ? (
-                        <ul className="mt-1 space-y-1 text-[10px] text-slate-600 dark:text-slate-200">
-                          {entry.items.map((item, index) => (
-                            <li key={`${entry.id}-item-${index}`} className="flex justify-between gap-3">
-                              <span>{item.name} x{item.quantity}</span>
-                              <span>₱{Number(item.price || 0).toFixed(2)}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="mt-1 text-[10px] text-slate-400">No item list available.</p>
-                      )}
-                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">{customer.phone || 'Walang numero'}</p>
+                    {latestEntry && (
+                      <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-300">
+                        Huling entry: {new Date(latestEntry.date).toLocaleDateString()} • {latestEntry.type === 'payment' ? 'Bayad' : 'Utang'}
+                      </p>
+                    )}
                   </div>
 
                   <div className="text-right">
-                    <span className={`block text-sm font-black ${isPayment ? 'text-emerald-500' : 'text-red-500'}`}>
-                      {isPayment ? '+ ' : '- '}{`₱${Number(entry.amount || 0).toFixed(2)}`}
+                    <span className={`block text-base font-black ${balance > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                      ₱{balance.toFixed(2)}
                     </span>
-                    <span className="text-[9px] text-slate-400">{entry.orderId}</span>
+                    <span className="text-[9px] text-slate-400">{ledger.length} record</span>
                   </div>
                 </div>
-              </div>
+              </button>
             );
           })
         )}
       </div>
+
+      {selectedCustomer && (
+        <div className="absolute inset-0 bg-black/70 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
+          <div className={`w-full h-[92%] rounded-t-[32px] p-4 pb-20 flex flex-col shadow-2xl ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'}`}>
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-amber-500 font-bold">Suki Ledger</p>
+                <h3 className="mt-1 font-black text-lg">{selectedCustomer.name}</h3>
+              </div>
+              <button onClick={() => setSelectedCustomer(null)} className="p-1 text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 p-3 text-center">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-600">Kasalukuyang Balans</p>
+              <div className="mt-1 text-2xl font-black text-amber-600">₱{(Number(selectedCustomer.balance) || 0).toFixed(2)}</div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-300">{selectedCustomer.phone || 'Walang numero'} • {selectedCustomerEntries.length} entry</p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto mt-3 space-y-2 pr-1">
+              {selectedCustomerEntries.length === 0 ? (
+                <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
+                  Walang utang o bayad na naitala para sa {selectedCustomer.name}.
+                </div>
+              ) : (
+                selectedCustomerEntries.map((entry) => {
+                  const isPayment = entry.type === 'payment';
+
+                  return (
+                    <div key={entry.id} className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isPayment ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {isPayment ? 'Bayad' : 'Utang'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">{new Date(entry.date).toLocaleDateString()}</span>
+                        </div>
+                        <span className={`text-sm font-black ${isPayment ? 'text-emerald-500' : 'text-red-500'}`}>
+                          {isPayment ? '+ ' : '- '}{`₱${Number(entry.amount || 0).toFixed(2)}`}
+                        </span>
+                      </div>
+
+                      <p className="mt-2 text-[10px] font-bold text-slate-500 dark:text-slate-300">{entry.description || 'No description'}</p>
+                      {entry.orderId && <p className="text-[9px] text-slate-400">Ref: {entry.orderId}</p>}
+
+                      {Array.isArray(entry.items) && entry.items.length > 0 ? (
+                        <div className="mt-2 rounded-xl bg-slate-100 dark:bg-slate-800 p-2">
+                          <ul className="space-y-1 text-[10px] text-slate-600 dark:text-slate-200">
+                            {entry.items.map((item, index) => (
+                              <li key={`${entry.id}-item-${index}`} className="flex justify-between gap-3">
+                                <span>{item.name} x{item.quantity}</span>
+                                <span>₱{Number(item.price || 0).toFixed(2)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[10px] text-slate-400">Walang item list.</p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => {
+                  onPabayad(selectedCustomer);
+                  setSelectedCustomer(null);
+                }}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-black text-sm"
+              >
+                Magbayad
+              </button>
+              <button
+                onClick={() => setSelectedCustomer(null)}
+                className="flex-1 border border-slate-300 dark:border-slate-700 py-3 rounded-2xl font-black text-sm"
+              >
+                Isara
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
