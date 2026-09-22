@@ -1,0 +1,17 @@
+{
+  "name": "Tindahan ni Ate Inday",
+  "short_name": "Ate Inday POS",
+  "description": "Offline-ready sari-sari store POS app with local data storage.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f4ee",
+  "theme_color": "#f59e0b",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
