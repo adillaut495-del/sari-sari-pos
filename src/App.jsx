@@ -663,7 +663,7 @@ export default function App() {
         </button>
       </div>
 
-      <div className={`relative w-full flex-1 overflow-hidden flex flex-col ${
+      <div className={`relative w-full flex-1 flex flex-col overflow-hidden ${
         theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'
       }`}>
 
@@ -700,7 +700,7 @@ export default function App() {
         </div>
 
         {/* Dynamic Viewport Container */}
-        <div className="flex-1 overflow-y-auto relative flex flex-col bg-slate-100/50 dark:bg-slate-950/40">
+        <div className="flex-1 overflow-y-auto relative flex flex-col bg-slate-100/50 dark:bg-slate-950/40 pb-20">
           {activeTab === 'register' && (
             <RegisterView
               theme={theme}
@@ -896,7 +896,7 @@ export default function App() {
         )}
 
         {/* Bottom Android Style Tab Bar Navigation */}
-        <div className={`sticky bottom-0 left-0 right-0 px-2 py-2 border-t flex justify-around items-center z-40 transition-colors ${
+        <div className={`fixed bottom-0 left-0 right-0 px-2 py-2 border-t flex justify-around items-center z-50 transition-colors ${
           theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
         }`}>
           <NavTabButton
