@@ -1,5 +1,15 @@
 {
   "theme": "light",
+  "setupComplete": false,
+  "storeProfile": {
+    "storeName": "Tindahan ni Ate Inday",
+    "ownerName": "Ate Inday",
+    "location": "Barangay 142",
+    "address": "Barangay 142, City Proper",
+    "phone": "0917-123-4567",
+    "businessType": "Sari-sari Store",
+    "currency": "PHP"
+  },
   "products": [
     {
       "id": "P-101",
@@ -80,7 +90,7 @@
   "sales": [
     {
       "id": "TRX-8821",
-      "timestamp": "2026-09-22T06:21:07.260Z",
+      "timestamp": "2026-09-22T06:35:14.440Z",
       "customerName": "Walk-in Customer",
       "items": [
         {

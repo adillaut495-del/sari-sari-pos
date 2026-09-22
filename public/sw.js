@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sari-sari-pos-v1';
+const CACHE_NAME = 'sari-sari-pos-v2';
 const CORE_ASSETS = ['/', '/index.html', '/manifest.webmanifest', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -17,7 +17,22 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') {
+  const requestUrl = new URL(event.request.url);
+
+  if (event.request.method !== 'GET' || requestUrl.pathname.startsWith('/api/')) {
+    return;
+  }
+
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', responseClone));
+          return networkResponse;
+        })
+        .catch(() => caches.match('/index.html'))
+    );
     return;
   }
 

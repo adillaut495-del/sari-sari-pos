@@ -224,6 +224,16 @@ const INITIAL_CUSTOMERS = [
   { id: 'C-03', name: 'Mang Juan', phone: '09085551234', address: 'Street 4 Corner', balance: 0.00, notes: 'Pays in exact cash always' }
 ];
 
+const DEFAULT_STORE_PROFILE = {
+  storeName: 'Tindahan ni Ate Inday',
+  ownerName: 'Ate Inday',
+  location: 'Barangay 142',
+  address: 'Barangay 142, City Proper',
+  phone: '0917-123-4567',
+  businessType: 'Sari-sari Store',
+  currency: 'PHP'
+};
+
 const INITIAL_SALES = [
   {
     id: 'TRX-8821',
@@ -263,6 +273,8 @@ const INITIAL_SALES = [
 
 export default function App() {
   const [theme, setTheme] = useState('light');
+  const [setupComplete, setSetupComplete] = useState(true);
+  const [storeProfile, setStoreProfile] = useState(DEFAULT_STORE_PROFILE);
   const [isOffline, setIsOffline] = useState(() => !navigator.onLine);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
@@ -290,6 +302,8 @@ export default function App() {
       }
       const data = await response.json();
       setTheme(data.theme || 'light');
+      setSetupComplete(Boolean(data.setupComplete));
+      setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
       setProducts(data.products || INITIAL_PRODUCTS);
       setCategories(data.categories || INITIAL_CATEGORIES);
       setCustomers(data.customers || INITIAL_CUSTOMERS);
@@ -297,6 +311,8 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setTheme('light');
+      setSetupComplete(false);
+      setStoreProfile(DEFAULT_STORE_PROFILE);
       setProducts(INITIAL_PRODUCTS);
       setCategories(INITIAL_CATEGORIES);
       setCustomers(INITIAL_CUSTOMERS);
@@ -321,6 +337,44 @@ export default function App() {
       });
     } catch (error) {
       console.error('Database save failed:', error);
+    }
+  };
+
+  const handleSetupSubmit = async (event) => {
+    event.preventDefault();
+
+    const form = new FormData(event.currentTarget);
+    const nextProfile = {
+      storeName: (form.get('storeName') || '').toString().trim() || DEFAULT_STORE_PROFILE.storeName,
+      ownerName: (form.get('ownerName') || '').toString().trim() || DEFAULT_STORE_PROFILE.ownerName,
+      location: (form.get('location') || '').toString().trim() || DEFAULT_STORE_PROFILE.location,
+      address: (form.get('address') || '').toString().trim() || DEFAULT_STORE_PROFILE.address,
+      phone: (form.get('phone') || '').toString().trim() || DEFAULT_STORE_PROFILE.phone,
+      businessType: (form.get('businessType') || '').toString().trim() || DEFAULT_STORE_PROFILE.businessType,
+      currency: (form.get('currency') || '').toString().trim() || DEFAULT_STORE_PROFILE.currency
+    };
+
+    setStoreProfile(nextProfile);
+    setSetupComplete(true);
+
+    try {
+      await fetch('/api/db', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          theme,
+          setupComplete: true,
+          storeProfile: nextProfile,
+          products,
+          categories,
+          customers,
+          sales: salesHistory
+        })
+      });
+      showToast('Store setup saved');
+    } catch (error) {
+      console.error('Setup save failed:', error);
+      showToast('Store setup could not be saved', 'error');
     }
   };
 
@@ -370,12 +424,14 @@ export default function App() {
 
     persistDatabase({
       theme,
+      setupComplete,
+      storeProfile,
       products,
       categories,
       customers,
       sales: salesHistory
     });
-  }, [theme, products, categories, customers, salesHistory, isDataLoaded]);
+  }, [theme, setupComplete, storeProfile, products, categories, customers, salesHistory, isDataLoaded]);
 
   const handleResetDatabase = async () => {
     if (!window.confirm('Reset the local server database to a fresh startup setup? This will clear all products, sales, and customer data.')) {
@@ -386,6 +442,8 @@ export default function App() {
       const response = await fetch('/api/reset-db', { method: 'POST' });
       const data = await response.json();
       setTheme(data.theme || 'light');
+      setSetupComplete(Boolean(data.setupComplete));
+      setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
       setProducts(data.products || INITIAL_PRODUCTS);
       setCategories(data.categories || INITIAL_CATEGORIES);
       setCustomers(data.customers || INITIAL_CUSTOMERS);
@@ -682,6 +740,73 @@ export default function App() {
     setPabayadAmount('');
   };
 
+  if (!isDataLoaded) {
+    return (
+      <div className={`min-h-screen w-full flex items-center justify-center ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50 text-slate-900'}`}>
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-amber-400 border-t-transparent" />
+          <p className="text-sm font-semibold">Loading your store data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!setupComplete) {
+    return (
+      <div className={`min-h-screen w-full flex items-center justify-center bg-gradient-to-br ${theme === 'dark' ? 'from-slate-950 via-slate-900 to-slate-800 text-slate-100' : 'from-amber-50 via-orange-50 to-yellow-50 text-slate-900'}`}>
+        <div className="w-full max-w-2xl rounded-3xl border border-amber-200 bg-white/90 p-6 shadow-2xl backdrop-blur-sm">
+          <div className="mb-6 text-center">
+            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500 text-3xl shadow-lg">🏪</div>
+            <p className="text-xs font-bold uppercase tracking-[0.3em] text-amber-600">Store Setup</p>
+            <h1 className="mt-2 text-3xl font-black">Set up your sari-sari store</h1>
+            <p className="mt-2 text-sm text-slate-500">Tell us your store details so receipts, reports, and your POS profile are ready.</p>
+          </div>
+
+          <form onSubmit={handleSetupSubmit} className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm font-semibold text-slate-700">
+                Store name
+                <input name="storeName" defaultValue={storeProfile.storeName} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Owner name
+                <input name="ownerName" defaultValue={storeProfile.ownerName} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Location / Barangay
+                <input name="location" defaultValue={storeProfile.location} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Business type
+                <input name="businessType" defaultValue={storeProfile.businessType} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+            </div>
+
+            <label className="block text-sm font-semibold text-slate-700">
+              Store address
+              <input name="address" defaultValue={storeProfile.address} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+            </label>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm font-semibold text-slate-700">
+                Phone number
+                <input name="phone" defaultValue={storeProfile.phone} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Currency
+                <input name="currency" defaultValue={storeProfile.currency} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              </label>
+            </div>
+
+            <button type="submit" className="w-full rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 text-base font-black text-white shadow-lg transition hover:opacity-95">
+              Save store setup
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen w-full flex flex-col transition-colors duration-300 font-sans ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/50 text-slate-900'}`}>
       {isOffline && (
@@ -721,11 +846,11 @@ export default function App() {
               🏪
             </div>
             <div>
-              <h1 className="text-base font-black leading-tight tracking-tight">Tindahan ni Ate Inday</h1>
+              <h1 className="text-base font-black leading-tight tracking-tight">{storeProfile.storeName}</h1>
               <p className="text-[10px] opacity-90 flex items-center space-x-1 font-medium">
-                <span>Barangay 142 POS</span>
+                <span>{storeProfile.location}</span>
                 <span>•</span>
-                <span className="text-emerald-200 font-bold">₱ PHP Ready</span>
+                <span className="text-emerald-200 font-bold">{storeProfile.currency} Ready</span>
               </p>
             </div>
           </div>
