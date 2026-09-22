@@ -8,6 +8,11 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4173,
     strictPort: true,
+    headers: {
+      'Cache-Control': 'no-store',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:4174',
@@ -23,5 +28,10 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4173,
     strictPort: true,
+    headers: {
+      'Cache-Control': 'no-store',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    },
   },
 })

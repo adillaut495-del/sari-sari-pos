@@ -341,17 +341,20 @@ export default function App() {
   };
 
   const handleSetupSubmit = async (event) => {
-    event.preventDefault();
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event?.currentTarget || document.getElementById('store-setup-form');
+    const formData = formElement ? new FormData(formElement) : null;
+
     const nextProfile = {
-      storeName: (form.get('storeName') || '').toString().trim() || DEFAULT_STORE_PROFILE.storeName,
-      ownerName: (form.get('ownerName') || '').toString().trim() || DEFAULT_STORE_PROFILE.ownerName,
-      location: (form.get('location') || '').toString().trim() || DEFAULT_STORE_PROFILE.location,
-      address: (form.get('address') || '').toString().trim() || DEFAULT_STORE_PROFILE.address,
-      phone: (form.get('phone') || '').toString().trim() || DEFAULT_STORE_PROFILE.phone,
-      businessType: (form.get('businessType') || '').toString().trim() || DEFAULT_STORE_PROFILE.businessType,
-      currency: (form.get('currency') || '').toString().trim() || DEFAULT_STORE_PROFILE.currency
+      storeName: (formData?.get('storeName') || '').toString().trim() || DEFAULT_STORE_PROFILE.storeName,
+      ownerName: (formData?.get('ownerName') || '').toString().trim() || DEFAULT_STORE_PROFILE.ownerName,
+      location: (formData?.get('location') || '').toString().trim() || DEFAULT_STORE_PROFILE.location,
+      address: (formData?.get('address') || '').toString().trim() || DEFAULT_STORE_PROFILE.address,
+      phone: (formData?.get('phone') || '').toString().trim() || DEFAULT_STORE_PROFILE.phone,
+      businessType: (formData?.get('businessType') || '').toString().trim() || DEFAULT_STORE_PROFILE.businessType,
+      currency: (formData?.get('currency') || '').toString().trim() || DEFAULT_STORE_PROFILE.currency
     };
 
     setStoreProfile(nextProfile);
@@ -420,7 +423,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!isDataLoaded) return;
+    if (!isDataLoaded || !setupComplete) return;
 
     persistDatabase({
       theme,
@@ -762,43 +765,98 @@ export default function App() {
             <p className="mt-2 text-sm text-slate-500">Tell us your store details so receipts, reports, and your POS profile are ready.</p>
           </div>
 
-          <form onSubmit={handleSetupSubmit} className="space-y-4">
+          <form
+            id="store-setup-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              handleSetupSubmit(event);
+            }}
+            className="space-y-4"
+            noValidate
+          >
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm font-semibold text-slate-700">
                 Store name
-                <input name="storeName" defaultValue={storeProfile.storeName} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="storeName"
+                  defaultValue={storeProfile.storeName}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
                 Owner name
-                <input name="ownerName" defaultValue={storeProfile.ownerName} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="ownerName"
+                  defaultValue={storeProfile.ownerName}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
                 Location / Barangay
-                <input name="location" defaultValue={storeProfile.location} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="location"
+                  defaultValue={storeProfile.location}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
                 Business type
-                <input name="businessType" defaultValue={storeProfile.businessType} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="businessType"
+                  defaultValue={storeProfile.businessType}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
             </div>
 
             <label className="block text-sm font-semibold text-slate-700">
               Store address
-              <input name="address" defaultValue={storeProfile.address} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+              <input
+                name="address"
+                defaultValue={storeProfile.address}
+                onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                required
+              />
             </label>
 
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm font-semibold text-slate-700">
                 Phone number
-                <input name="phone" defaultValue={storeProfile.phone} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="phone"
+                  defaultValue={storeProfile.phone}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
                 Currency
-                <input name="currency" defaultValue={storeProfile.currency} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white" required />
+                <input
+                  name="currency"
+                  defaultValue={storeProfile.currency}
+                  onKeyDown={(event) => event.key === 'Enter' && event.preventDefault()}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 outline-none ring-0 transition focus:border-amber-400 focus:bg-white"
+                  required
+                />
               </label>
             </div>
 
-            <button type="submit" className="w-full rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 text-base font-black text-white shadow-lg transition hover:opacity-95">
+            <button
+              type="button"
+              onClick={() => handleSetupSubmit(document.getElementById('store-setup-form'))}
+              className="w-full rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 text-base font-black text-white shadow-lg transition hover:opacity-95"
+            >
               Save store setup
             </button>
           </form>
