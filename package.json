@@ -9,8 +9,10 @@
     "dev:server": "node server.js",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "start": "node server.js"
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "preview:frontend": "vite preview --host 0.0.0.0 --port 4173",
+    "start": "node server.js",
+    "start:local": "concurrently \"npm run preview:frontend\" \"npm run dev:server\""
   },
   "dependencies": {
     "concurrently": "^10.0.5",

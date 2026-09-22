@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
 call npm install
-call npm run dev -- --host 0.0.0.0 --port 4173
+call npm run start:local

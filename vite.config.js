@@ -19,10 +19,7 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
-    hmr: {
-      host: 'localhost',
-      port: 4173,
-    },
+    hmr: false,
   },
   preview: {
     host: '0.0.0.0',
