@@ -3,11 +3,11 @@ import './index.css'
 import App from './App.jsx'
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // Ignore registration errors; the app still works offline via local storage.
-    })
-  })
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((registration) => registration.unregister());
+  }).catch(() => {
+    // Ignore unregister errors; the app should still load without stale service workers.
+  });
 }
 
 createRoot(document.getElementById('root')).render(<App />)
