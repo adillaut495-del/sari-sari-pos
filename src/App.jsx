@@ -262,9 +262,8 @@ const INITIAL_SALES = [
 ];
 
 export default function App() {
-  // Theme & View Mode
+  // Theme & connection state
   const [theme, setTheme] = useState(() => localStorage.getItem('sari_theme') || 'light');
-  const [isMobileFrame, setIsMobileFrame] = useState(false);
   const [isOffline, setIsOffline] = useState(() => !navigator.onLine);
 
   useEffect(() => {
@@ -668,18 +667,6 @@ export default function App() {
         theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'
       }`}>
 
-        {/* Android Notch Header (Only in Mobile Frame mode) */}
-        {isMobileFrame && (
-          <div className="w-full bg-slate-950 text-white pt-2 px-6 pb-1 flex justify-between items-center text-[11px] font-medium z-50 select-none">
-            <span>09:41 AM</span>
-            <div className="w-20 h-4 bg-black rounded-b-xl absolute top-0 left-1/2 -translate-x-1/2"></div>
-            <div className="flex items-center space-x-1.5">
-              <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold px-1 rounded">ONLINE</span>
-              <Wifi className="w-3 h-3 text-emerald-400" />
-            </div>
-          </div>
-        )}
-
         {/* Sari-Sari Store App Top Bar */}
         <div className={`px-4 py-3 border-b flex items-center justify-between z-30 transition-colors ${
           theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-amber-500 text-white border-amber-600 shadow-md'
@@ -909,7 +896,7 @@ export default function App() {
         )}
 
         {/* Bottom Android Style Tab Bar Navigation */}
-        <div className={`px-2 py-2 border-t flex justify-around items-center z-40 transition-colors ${
+        <div className={`sticky bottom-0 left-0 right-0 px-2 py-2 border-t flex justify-around items-center z-40 transition-colors ${
           theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
         }`}>
           <NavTabButton
