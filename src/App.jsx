@@ -262,9 +262,9 @@ const INITIAL_SALES = [
 ];
 
 export default function App() {
-  // Theme & Mobile Viewport Mode
+  // Theme & View Mode
   const [theme, setTheme] = useState(() => localStorage.getItem('sari_theme') || 'light');
-  const [isMobileFrame, setIsMobileFrame] = useState(true);
+  const [isMobileFrame, setIsMobileFrame] = useState(false);
   const [isOffline, setIsOffline] = useState(() => !navigator.onLine);
 
   useEffect(() => {
@@ -647,23 +647,14 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen w-full flex flex-col items-center justify-center p-0 sm:p-4 transition-colors duration-300 font-sans ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/50 text-slate-900'}`}>
+    <div className={`min-h-screen w-full flex flex-col transition-colors duration-300 font-sans ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/50 text-slate-900'}`}>
       {isOffline && (
-        <div className="w-full max-w-4xl mb-3 rounded-2xl border border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold text-amber-900 shadow-sm">
+        <div className="w-full border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold text-amber-900 shadow-sm">
           Offline mode active • local POS data stays saved on this device
         </div>
       )}
-      
-      {/* Viewport Frame Mode Toggle Toolbar */}
-      <div className="hidden sm:flex items-center space-x-3 mb-3 text-xs font-semibold">
-        <button
-          onClick={() => setIsMobileFrame(!isMobileFrame)}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-slate-800 text-slate-200 hover:bg-slate-700 transition shadow-sm"
-        >
-          {isMobileFrame ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
-          <span>{isMobileFrame ? 'Full Viewport Mode' : 'Android Mobile Frame'}</span>
-        </button>
 
+      <div className="flex items-center justify-between px-4 py-3 text-xs font-semibold">
         <button
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-amber-500 text-white hover:bg-amber-600 transition shadow-sm"
@@ -673,9 +664,8 @@ export default function App() {
         </button>
       </div>
 
-      {/* Main Mobile App Container */}
-      <div className={`relative w-full ${isMobileFrame ? 'max-w-[420px] h-[90vh] max-h-[880px] rounded-[38px] border-[8px] shadow-2xl' : 'max-w-4xl min-h-screen rounded-none sm:rounded-3xl border-0 sm:border'} overflow-hidden flex flex-col transition-all duration-300 ${
-        theme === 'dark' ? 'bg-slate-900 border-slate-800 shadow-amber-950/20' : 'bg-slate-50 border-amber-200/80 shadow-amber-200/50'
+      <div className={`relative w-full flex-1 overflow-hidden flex flex-col ${
+        theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'
       }`}>
 
         {/* Android Notch Header (Only in Mobile Frame mode) */}
