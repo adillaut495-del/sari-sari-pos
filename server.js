@@ -34,7 +34,8 @@ const INITIAL_DATA = {
     'Canned Goods',
     'Household & Toiletries',
     'Alcohol & Tobacco',
-    'Tingi / Retail'
+    'Tingi / Retail',
+    'Uncategorized'
   ],
   customers: [],
   sales: []
