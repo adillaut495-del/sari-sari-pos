@@ -630,7 +630,13 @@ export default function App() {
                 amount: totalAmount,
                 date: new Date().toISOString(),
                 description: `Utang for ${customerName}`,
-                orderId: newOrder.id
+                orderId: newOrder.id,
+                items: newOrder.items.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  quantity: item.quantity,
+                  price: Number(item.price) || 0
+                }))
               },
               ...(Array.isArray(cust.ledger) ? cust.ledger : [])
             ]
@@ -787,7 +793,8 @@ export default function App() {
               amount: amt,
               date: new Date().toISOString(),
               description: `Payment received from ${c.name}`,
-              orderId: `PMT-${Date.now()}`
+              orderId: `PMT-${Date.now()}`,
+              items: []
             },
             ...(Array.isArray(c.ledger) ? c.ledger : [])
           ]
@@ -1988,11 +1995,18 @@ function RestockModal({ theme, product, restockQty, setRestockQty, onConfirm, on
 
 function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
   const totalOutstandingUtang = customers.reduce((a, b) => a + (Number(b.balance) || 0), 0);
-  const [expandedCustomerId, setExpandedCustomerId] = useState(customers[0]?.id ?? null);
 
-  const toggleCustomer = (customerId) => {
-    setExpandedCustomerId((prev) => (prev === customerId ? null : customerId));
-  };
+  const allLedgerEntries = customers
+    .flatMap((customer) =>
+      (Array.isArray(customer.ledger) ? customer.ledger : []).map((entry) => ({
+        ...entry,
+        customerName: customer.name,
+        customerId: customer.id,
+        customerBalance: Number(customer.balance) || 0,
+        customerPhone: customer.phone || 'No contact'
+      }))
+    )
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
 
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
@@ -2003,7 +2017,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       <div className="flex items-center justify-between">
-        <h2 className="font-black text-sm">Listahan ng Suki at Utang</h2>
+        <h2 className="font-black text-sm">Listahan ng Utang at Bayad</h2>
         <button
           onClick={onAddCustomer}
           className="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1 rounded-xl font-bold text-xs flex items-center space-x-1"
@@ -2014,96 +2028,60 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       <div className="space-y-2">
-        {customers.map((c) => {
-          const customerLedger = Array.isArray(c.ledger) ? c.ledger : [];
-          const debtEntries = customerLedger.filter((entry) => entry.type === 'sale' || entry.type === 'voided_sale');
-          const paymentEntries = customerLedger.filter((entry) => entry.type === 'payment');
-          const isOpen = expandedCustomerId === c.id;
+        {allLedgerEntries.length === 0 ? (
+          <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
+            Walang utang o bayad na naitala pa.
+          </div>
+        ) : (
+          allLedgerEntries.map((entry) => {
+            const isPayment = entry.type === 'payment';
+            const amountText = `${isPayment ? 'Payment' : 'Utang'} • ₱${Number(entry.amount || 0).toFixed(2)}`;
 
-          return (
-            <div
-              key={c.id}
-              className={`p-3 rounded-2xl border ${
-                theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  onClick={() => toggleCustomer(c.id)}
-                  className="flex-1 text-left"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <h4 className="font-black text-xs">{c.name}</h4>
-                      <p className="text-[10px] text-slate-400">{c.phone || 'No contact'} • {c.notes || 'No notes'}</p>
-                    </div>
-                    <div className="text-right">
-                      <span className={`text-xs font-black block ${ (Number(c.balance) || 0) > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                        ₱{(Number(c.balance) || 0).toFixed(2)}
+            return (
+              <div
+                key={entry.id}
+                className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isPayment ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                        {isPayment ? 'Payment' : 'Utang'}
                       </span>
-                      <span className="text-[9px] text-slate-400">Outstanding</span>
+                      <span className="text-[10px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {new Date(entry.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+
+                    <h4 className="mt-2 font-black text-xs">{entry.customerName}</h4>
+                    <p className="text-[10px] text-slate-400">{entry.customerPhone}</p>
+
+                    <div className="mt-2 rounded-xl bg-slate-100 dark:bg-slate-800 p-2">
+                      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{entry.description}</p>
+                      {Array.isArray(entry.items) && entry.items.length > 0 ? (
+                        <ul className="mt-1 space-y-1 text-[10px] text-slate-600 dark:text-slate-200">
+                          {entry.items.map((item, index) => (
+                            <li key={`${entry.id}-item-${index}`} className="flex justify-between gap-3">
+                              <span>{item.name} x{item.quantity}</span>
+                              <span>₱{Number(item.price || 0).toFixed(2)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-[10px] text-slate-400">No item list available.</p>
+                      )}
                     </div>
                   </div>
-                </button>
 
-                {(Number(c.balance) || 0) > 0 && (
-                  <button
-                    onClick={() => onPabayad(c)}
-                    className="bg-emerald-600 text-white px-2.5 py-1 rounded-xl font-bold text-[10px] shadow-xs"
-                  >
-                    Magbayad
-                  </button>
-                )}
-              </div>
-
-              {isOpen && (
-                <div className="mt-3 border-t border-slate-200 dark:border-slate-700 pt-3 space-y-3">
-                  <div className="grid gap-2 md:grid-cols-2">
-                    <div className={`rounded-xl p-2 ${theme === 'dark' ? 'bg-slate-800' : 'bg-red-50'}`}>
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase text-red-500">Utang</span>
-                        <span className="text-[10px] font-bold text-slate-500">{debtEntries.length} entry</span>
-                      </div>
-                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                        {debtEntries.length > 0 ? debtEntries.map((entry) => (
-                          <div key={entry.id} className="flex items-start justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700 pb-1">
-                            <div>
-                              <p className="text-[10px] font-bold text-slate-700 dark:text-slate-200">{entry.description}</p>
-                              <p className="text-[9px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {entry.orderId}</p>
-                            </div>
-                            <span className="text-[10px] font-black text-red-500">₱{Number(entry.amount || 0).toFixed(2)}</span>
-                          </div>
-                        )) : (
-                          <p className="text-[10px] text-slate-400">Walang utang na naitala.</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className={`rounded-xl p-2 ${theme === 'dark' ? 'bg-slate-800' : 'bg-emerald-50'}`}>
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase text-emerald-500">Payments</span>
-                        <span className="text-[10px] font-bold text-slate-500">{paymentEntries.length} entry</span>
-                      </div>
-                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-                        {paymentEntries.length > 0 ? paymentEntries.map((entry) => (
-                          <div key={entry.id} className="flex items-start justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700 pb-1">
-                            <div>
-                              <p className="text-[10px] font-bold text-slate-700 dark:text-slate-200">{entry.description}</p>
-                              <p className="text-[9px] text-slate-400">{new Date(entry.date).toLocaleDateString()} • {entry.orderId}</p>
-                            </div>
-                            <span className="text-[10px] font-black text-emerald-500">₱{Number(entry.amount || 0).toFixed(2)}</span>
-                          </div>
-                        )) : (
-                          <p className="text-[10px] text-slate-400">Walang bayad na naitala.</p>
-                        )}
-                      </div>
-                    </div>
+                  <div className="text-right">
+                    <span className={`block text-sm font-black ${isPayment ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {isPayment ? '+ ' : '- '}{`₱${Number(entry.amount || 0).toFixed(2)}`}
+                    </span>
+                    <span className="text-[9px] text-slate-400">{entry.orderId}</span>
                   </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );

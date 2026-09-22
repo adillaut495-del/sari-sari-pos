@@ -25,47 +25,7 @@ const INITIAL_DATA = {
   theme: 'light',
   setupComplete: false,
   storeProfile: DEFAULT_STORE_PROFILE,
-  products: [
-    {
-      id: 'P-101',
-      name: 'Piattos Cheese 85g',
-      category: 'Snacks',
-      costPrice: 32.0,
-      retailPrice: 38.0,
-      stock: 24,
-      reorderLevel: 5,
-      unit: 'packs',
-      barcode: '480001605201',
-      icon: '🥔',
-      hasTingi: false
-    },
-    {
-      id: 'P-102',
-      name: 'Lucky Me Instant Pancit Canton Extra Hot',
-      category: 'Instant Noodles',
-      costPrice: 14.5,
-      retailPrice: 17.5,
-      stock: 48,
-      reorderLevel: 10,
-      unit: 'packs',
-      barcode: '480001660102',
-      icon: '🍜',
-      hasTingi: false
-    },
-    {
-      id: 'P-103',
-      name: 'C2 Green Tea Apple 500ml',
-      category: 'Beverages',
-      costPrice: 24.0,
-      retailPrice: 30.0,
-      stock: 18,
-      reorderLevel: 6,
-      unit: 'bottles',
-      barcode: '480001611003',
-      icon: '🧃',
-      hasTingi: false
-    }
-  ],
+  products: [],
   categories: [
     'All',
     'Instant Noodles',
@@ -76,30 +36,8 @@ const INITIAL_DATA = {
     'Alcohol & Tobacco',
     'Tingi / Retail'
   ],
-  customers: [
-    { id: 'C-01', name: 'Aling Nena', phone: '09171234567', address: 'Block 2 Lot 5', balance: 245.0, notes: 'Suki, pays every Friday' },
-    { id: 'C-02', name: 'Kuya Cardo', phone: '09289876543', address: 'Near Basketball Court', balance: 120.0, notes: ' Tricycle driver' },
-    { id: 'C-03', name: 'Mang Juan', phone: '09085551234', address: 'Street 4 Corner', balance: 0.0, notes: 'Pays in exact cash always' }
-  ],
-  sales: [
-    {
-      id: 'TRX-8821',
-      timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
-      customerName: 'Walk-in Customer',
-      items: [
-        { id: 'P-102', name: 'Lucky Me Instant Pancit Canton Extra Hot', price: 17.5, quantity: 2, isTingi: false },
-        { id: 'P-108', name: 'Coca-Cola 1.5L PET', price: 75.0, quantity: 1, isTingi: false }
-      ],
-      subtotal: 110.0,
-      discount: 0,
-      totalAmount: 110.0,
-      paymentMethod: 'Cash',
-      tendered: 200.0,
-      change: 90.0,
-      status: 'Completed',
-      cashier: 'Ate Inday (Owner)'
-    }
-  ]
+  customers: [],
+  sales: []
 };
 
 function ensureDbDir() {
