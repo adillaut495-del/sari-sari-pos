@@ -348,6 +348,7 @@ export default function App() {
   const [theme, setTheme] = useState('light');
   const [setupComplete, setSetupComplete] = useState(true);
   const [storeProfile, setStoreProfile] = useState(DEFAULT_STORE_PROFILE);
+  const [scanIntervalMs, setScanIntervalMs] = useState(2000);
   const [isOffline, setIsOffline] = useState(() => !navigator.onLine);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
@@ -377,6 +378,7 @@ export default function App() {
       setTheme(data.theme || 'light');
       setSetupComplete(Boolean(data.setupComplete));
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
+      setScanIntervalMs(Number(data.scanIntervalMs) > 0 ? Number(data.scanIntervalMs) : 2000);
       setProducts((data.products || INITIAL_PRODUCTS).map(normalizeProduct));
       setCategories(data.categories || INITIAL_CATEGORIES);
       setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
@@ -386,6 +388,7 @@ export default function App() {
       setTheme('light');
       setSetupComplete(false);
       setStoreProfile(DEFAULT_STORE_PROFILE);
+      setScanIntervalMs(2000);
       setProducts(INITIAL_PRODUCTS.map(normalizeProduct));
       setCategories(INITIAL_CATEGORIES);
       setCustomers(INITIAL_CUSTOMERS.map(normalizeCustomer));
@@ -544,12 +547,13 @@ export default function App() {
       theme,
       setupComplete,
       storeProfile,
+      scanIntervalMs,
       products,
       categories,
       customers,
       sales: salesHistory
     });
-  }, [theme, setupComplete, storeProfile, products, categories, customers, salesHistory, isDataLoaded]);
+  }, [theme, setupComplete, storeProfile, scanIntervalMs, products, categories, customers, salesHistory, isDataLoaded]);
 
   const handleResetDatabase = async () => {
     if (!window.confirm('Reset the local server database to a fresh startup setup? This will clear all products, sales, and customer data.')) {
@@ -1123,6 +1127,7 @@ export default function App() {
               totalAmount={totalAmount}
               setIsCartOpen={setIsCartOpen}
               onBarcodeScan={handleBarcodeScan}
+              scanIntervalMs={scanIntervalMs}
             />
           )}
 
@@ -1186,6 +1191,8 @@ export default function App() {
               theme={theme}
               setTheme={setTheme}
               storeProfile={storeProfile}
+              scanIntervalMs={scanIntervalMs}
+              setScanIntervalMs={setScanIntervalMs}
               categories={categories}
               onAddCategory={handleAddCategory}
               onDeleteCategory={handleDeleteCategory}
@@ -1390,11 +1397,12 @@ function NavTabButton({ icon: Icon, label, isActive, onClick, badge, theme }) {
   );
 }
 
-function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen, onBarcodeScan }) {
+function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen, onBarcodeScan, scanIntervalMs }) {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [cameraError, setCameraError] = useState('');
   const [isScannerOpen, setIsScannerOpen] = useState(true);
   const videoRef = useRef(null);
+  const lastDetectedAtRef = useRef(0);
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -1437,7 +1445,9 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
               const detected = await detector.detect(videoRef.current);
               if (detected && detected.length > 0) {
                 const code = detected[0]?.rawValue || '';
-                if (code) {
+                const now = Date.now();
+                if (code && now - lastDetectedAtRef.current >= scanIntervalMs) {
+                  lastDetectedAtRef.current = now;
                   onBarcodeScan(code);
                   setCameraError('');
                 }
@@ -1465,7 +1475,7 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
       if (frameHandle) cancelAnimationFrame(frameHandle);
       if (stream) stream.getTracks().forEach((track) => track.stop());
     };
-  }, [isScannerOpen, onBarcodeScan]);
+  }, [isScannerOpen, onBarcodeScan, scanIntervalMs]);
 
   const handleBarcodeSubmit = (event) => {
     event.preventDefault();
@@ -2650,7 +2660,7 @@ function CategoryManager({ theme, categories, onAddCategory, onDeleteCategory })
   );
 }
 
-function SettingsView({ theme, setTheme, storeProfile, categories, onAddCategory, onDeleteCategory, onResetDatabase }) {
+function SettingsView({ theme, setTheme, storeProfile, scanIntervalMs, setScanIntervalMs, categories, onAddCategory, onDeleteCategory, onResetDatabase }) {
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
       <div className={`rounded-2xl border p-4 ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-sm'}`}>
@@ -2665,6 +2675,23 @@ function SettingsView({ theme, setTheme, storeProfile, categories, onAddCategory
         </div>
 
         <div className="space-y-3">
+          <div className={`rounded-2xl border p-3 ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-slate-50'}`}>
+            <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Barcode scan interval</label>
+            <select
+              value={scanIntervalMs}
+              onChange={(e) => setScanIntervalMs(Number(e.target.value))}
+              className={`w-full rounded-xl border px-3 py-2 text-sm font-bold outline-none ${
+                theme === 'dark'
+                  ? 'border-slate-700 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-white text-slate-900'
+              }`}
+            >
+              <option value={1000}>1 second</option>
+              <option value={2000}>2 seconds</option>
+              <option value={3000}>3 seconds</option>
+            </select>
+          </div>
+
           <button
             onClick={onResetDatabase}
             className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
