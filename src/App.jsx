@@ -803,7 +803,7 @@ export default function App() {
       setCustomers((prev) =>
         prev.map((cust) => {
           if (cust.id !== order.customerId) return normalizeCustomer(cust);
-          const nextBalance = Math.max(0, (Number(cust.balance) || 0) - order.totalAmount);
+          const nextBalance = (Number(cust.balance) || 0) - order.totalAmount;
           return normalizeCustomer({
             ...cust,
             balance: nextBalance,
@@ -922,9 +922,10 @@ export default function App() {
     setCustomers((prev) =>
       prev.map((c) => {
         if (c.id !== selectedCustomerForPayment.id) return normalizeCustomer(c);
+        const nextBalance = (Number(c.balance) || 0) - amt;
         return normalizeCustomer({
           ...c,
-          balance: Math.max(0, (Number(c.balance) || 0) - amt),
+          balance: nextBalance,
           ledger: [
             {
               id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -2490,8 +2491,8 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="font-black text-sm">{customer.name}</h3>
-                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${balance > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                        {balance > 0 ? 'May Utang' : 'Lutong Buwis'}
+                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${balance > 0 ? 'bg-red-100 text-red-700' : balance < 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                        {balance > 0 ? 'May Utang' : balance < 0 ? 'May Pondo' : 'Lutong Buwis'}
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">{customer.phone || 'Walang numero'}</p>
@@ -2503,7 +2504,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
                   </div>
 
                   <div className="text-right">
-                    <span className={`block text-base font-black ${balance > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                    <span className={`block text-base font-black ${balance > 0 ? 'text-red-500' : balance < 0 ? 'text-amber-600' : 'text-emerald-500'}`}>
                       ₱{balance.toFixed(2)}
                     </span>
                     <span className="text-[9px] text-slate-400">{ledger.length} record</span>
@@ -2797,13 +2798,41 @@ function CustomerFormModal({ theme, onSave, onClose }) {
 }
 
 function PabayadModal({ theme, customer, pabayadAmount, setPabayadAmount, onConfirm, onClose }) {
+  const balance = Number(customer.balance) || 0;
+  const quickAmounts = Array.from(new Set([
+    25,
+    50,
+    100,
+    Math.min(200, Math.max(100, Math.abs(balance) || 100)),
+    Math.min(500, Math.max(200, Math.abs(balance) || 200)),
+    Math.max(50, Math.abs(balance) || 50)
+  ].filter((amount) => Number.isFinite(amount) && amount > 0))).sort((a, b) => a - b);
+
   return (
     <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
       <div className={`w-full max-w-xs rounded-3xl p-4 space-y-3 ${
         theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
       }`}>
         <h3 className="font-black text-sm">Pabayad sa Utang: {customer.name}</h3>
-        <p className="text-xs text-slate-400">Kasalukuyang Utang: <span className="font-bold text-red-500">₱{customer.balance.toFixed(2)}</span></p>
+        <p className="text-xs text-slate-400">
+          Kasalukuyang Balans:{' '}
+          <span className={`font-bold ${balance < 0 ? 'text-amber-500' : 'text-red-500'}`}>
+            ₱{balance.toFixed(2)}
+          </span>
+        </p>
+
+        <div className="grid grid-cols-3 gap-2">
+          {quickAmounts.map((amount) => (
+            <button
+              key={amount}
+              type="button"
+              onClick={() => setPabayadAmount(String(amount))}
+              className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[10px] font-black text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+            >
+              ₱{amount.toFixed(2)}
+            </button>
+          ))}
+        </div>
 
         <input
           type="number"
