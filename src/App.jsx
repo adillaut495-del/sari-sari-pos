@@ -573,6 +573,19 @@ export default function App() {
     }
   };
 
+  const handleBarcodeScan = (barcodeValue) => {
+    const code = String(barcodeValue || '').trim();
+    if (!code) return;
+
+    const foundProduct = products.find((product) => String(product.barcode || '').trim() === code);
+    if (!foundProduct) {
+      showToast('Barcode not found in inventory', 'error');
+      return;
+    }
+
+    addToCart(foundProduct, false);
+  };
+
   // Cart Calculations
   const subtotal = useMemo(() => {
     return cart.reduce((acc, item) => acc + item.itemPrice * item.quantity, 0);
@@ -1109,6 +1122,7 @@ export default function App() {
               cart={cart}
               totalAmount={totalAmount}
               setIsCartOpen={setIsCartOpen}
+              onBarcodeScan={handleBarcodeScan}
             />
           )}
 
@@ -1376,7 +1390,12 @@ function NavTabButton({ icon: Icon, label, isActive, onClick, badge, theme }) {
   );
 }
 
-function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen }) {
+function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen, onBarcodeScan }) {
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [cameraError, setCameraError] = useState('');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const videoRef = useRef(null);
+
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
@@ -1385,9 +1404,123 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
     });
   }, [products, selectedCategory, searchQuery]);
 
+  useEffect(() => {
+    if (!isScannerOpen) return undefined;
+
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera barcode scanner is not supported on this device.');
+      setIsScannerOpen(false);
+      return undefined;
+    }
+
+    let stream;
+    let frameHandle;
+    let cancelled = false;
+
+    const startScan = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const detector = new window.BarcodeDetector({
+          formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code']
+        });
+
+        const detectLoop = async () => {
+          if (cancelled) return;
+
+          try {
+            if (videoRef.current && videoRef.current.readyState >= 2) {
+              const detected = await detector.detect(videoRef.current);
+              if (detected && detected.length > 0) {
+                const code = detected[0]?.rawValue || '';
+                if (code) {
+                  onBarcodeScan(code);
+                  setCameraError('');
+                  setIsScannerOpen(false);
+                  if (stream) stream.getTracks().forEach((track) => track.stop());
+                  return;
+                }
+              }
+            }
+          } catch (error) {
+            console.warn('Barcode scan failed:', error);
+          }
+
+          frameHandle = requestAnimationFrame(detectLoop);
+        };
+
+        detectLoop();
+      } catch (error) {
+        console.error('Camera failed:', error);
+        setCameraError('Camera access failed. You can type the barcode manually instead.');
+        setIsScannerOpen(false);
+      }
+    };
+
+    startScan();
+
+    return () => {
+      cancelled = true;
+      if (frameHandle) cancelAnimationFrame(frameHandle);
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+    };
+  }, [isScannerOpen, onBarcodeScan]);
+
+  const handleBarcodeSubmit = (event) => {
+    event.preventDefault();
+    if (!barcodeInput.trim()) return;
+    onBarcodeScan(barcodeInput);
+    setBarcodeInput('');
+  };
+
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-20">
       
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900 dark:bg-amber-950/40">
+        <div className="flex items-center gap-2">
+          <form onSubmit={handleBarcodeSubmit} className="flex-1 flex items-center gap-2">
+            <input
+              type="text"
+              value={barcodeInput}
+              onChange={(e) => setBarcodeInput(e.target.value)}
+              placeholder="Scan or type barcode"
+              className={`flex-1 rounded-xl border px-3 py-2 text-[11px] font-bold outline-none ${
+                theme === 'dark'
+                  ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400'
+                  : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+              }`}
+            />
+            <button
+              type="submit"
+              className="rounded-xl bg-amber-500 px-3 py-2 text-[10px] font-black text-white shadow-sm"
+            >
+              Add
+            </button>
+          </form>
+          <button
+            type="button"
+            onClick={() => setIsScannerOpen(true)}
+            className="rounded-xl border border-amber-300 bg-white px-2.5 py-2 text-[10px] font-black text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300"
+          >
+            <div className="flex items-center gap-1">
+              <QrCode className="w-3.5 h-3.5" />
+              <span>Scan</span>
+            </div>
+          </button>
+        </div>
+
+        {cameraError && <p className="mt-2 text-[10px] text-red-500">{cameraError}</p>}
+        {isScannerOpen && (
+          <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
+            <video ref={videoRef} className="h-32 w-full object-cover" muted playsInline autoPlay />
+          </div>
+        )}
+      </div>
+
       {/* Search Input Bar */}
       <div className="relative">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
