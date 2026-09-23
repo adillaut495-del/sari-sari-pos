@@ -1393,7 +1393,7 @@ function NavTabButton({ icon: Icon, label, isActive, onClick, badge, theme }) {
 function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen, onBarcodeScan }) {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [cameraError, setCameraError] = useState('');
-  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(true);
   const videoRef = useRef(null);
 
   const filteredProducts = useMemo(() => {
@@ -1503,12 +1503,16 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
           </form>
           <button
             type="button"
-            onClick={() => setIsScannerOpen(true)}
-            className="rounded-xl border border-amber-300 bg-white px-2.5 py-2 text-[10px] font-black text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300"
+            onClick={() => setIsScannerOpen((prev) => !prev)}
+            className={`rounded-xl border px-2.5 py-2 text-[10px] font-black ${
+              isScannerOpen
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                : 'border-amber-300 bg-white text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300'
+            }`}
           >
             <div className="flex items-center gap-1">
               <QrCode className="w-3.5 h-3.5" />
-              <span>Scan</span>
+              <span>{isScannerOpen ? 'Live' : 'Scan'}</span>
             </div>
           </button>
         </div>
