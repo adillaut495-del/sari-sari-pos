@@ -41,6 +41,31 @@ const INITIAL_DATA = {
   sales: []
 };
 
+function normalizeProduct(product = {}) {
+  const costPrice = Number(product.costPrice) || 0;
+  const retailPrice = Number(product.retailPrice) || 0;
+  const stock = Number(product.stock) || 0;
+  const reorderLevel = Number(product.reorderLevel) || 0;
+  const tingiPrice = Number(product.tingiPrice) || 0;
+
+  return {
+    ...product,
+    id: product.id || `P-${Math.floor(100 + Math.random() * 900)}`,
+    name: product.name || 'New Product',
+    category: product.category || 'Uncategorized',
+    costPrice,
+    retailPrice,
+    stock,
+    reorderLevel,
+    unit: product.unit || 'pcs',
+    barcode: product.barcode || '',
+    image: product.image || product.icon || '',
+    icon: product.icon || product.image || '📦',
+    hasTingi: Boolean(product.hasTingi),
+    tingiPrice
+  };
+}
+
 function ensureDbDir() {
   const dir = path.dirname(databaseFile);
   if (!fs.existsSync(dir)) {
@@ -59,7 +84,7 @@ function normalizeData(data) {
       ...base.storeProfile,
       ...(data?.storeProfile || {})
     },
-    products: Array.isArray(data?.products) ? data.products : base.products,
+    products: Array.isArray(data?.products) ? data.products.map(normalizeProduct) : base.products,
     categories: Array.isArray(data?.categories) ? data.categories : base.categories,
     customers: Array.isArray(data?.customers) ? data.customers : base.customers,
     sales: Array.isArray(data?.sales) ? data.sales : base.sales

@@ -10,7 +10,25 @@
     "businessType": "Sari-sari Store",
     "currency": "PHP"
   },
-  "products": [],
+  "products": [
+    {
+      "name": "sa",
+      "category": "Instant Noodles",
+      "costPrice": 1,
+      "retailPrice": 1,
+      "stock": 0,
+      "reorderLevel": 5,
+      "unit": "pcs",
+      "barcode": "1123",
+      "image": "data:image/jpeg;base64,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",
+      "icon": "📦",
+      "hasTingi": false,
+      "tingiPrice": 0,
+      "id": "P-736",
+      "barcodeText": "1123",
+      "tingiRatio": 1
+    }
+  ],
   "categories": [
     "All",
     "Instant Noodles",
@@ -21,6 +39,49 @@
     "Alcohol & Tobacco",
     "Tingi / Retail"
   ],
-  "customers": [],
-  "sales": []
+  "customers": [
+    {
+      "name": "adil",
+      "phone": "",
+      "notes": "",
+      "balance": 0,
+      "id": "C-76",
+      "ledger": [
+        {
+          "id": "L-1790142557077-51391b",
+          "type": "payment",
+          "amount": 100,
+          "date": "2026-09-23T05:49:17.077Z",
+          "description": "Payment received from adil",
+          "orderId": "PMT-1790142557077",
+          "items": []
+        }
+      ]
+    }
+  ],
+  "sales": [
+    {
+      "id": "TRX-9053",
+      "timestamp": "2026-09-23T07:31:24.390Z",
+      "customerName": "Walk-in Suki",
+      "customerId": null,
+      "items": [
+        {
+          "id": "P-736",
+          "name": "sa",
+          "price": 1,
+          "quantity": 1,
+          "isTingi": false
+        }
+      ],
+      "subtotal": 1,
+      "discount": 0,
+      "totalAmount": 1,
+      "paymentMethod": "Cash",
+      "tendered": 1,
+      "change": 0,
+      "status": "Completed",
+      "cashier": "Ate Inday (Owner)"
+    }
+  ]
 }

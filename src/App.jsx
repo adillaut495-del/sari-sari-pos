@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ShoppingBag,
+  ShoppingCart,
   Search,
   Plus,
   Minus,
@@ -35,6 +36,8 @@ import {
   AlertTriangle,
   RotateCcw,
   Smartphone,
+  Camera,
+  ImageUp,
   Maximize2,
   Minimize2,
   Sparkles,
@@ -251,6 +254,59 @@ const DEFAULT_STORE_PROFILE = {
   currency: 'PHP'
 };
 
+const isImageSource = (value) => {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/');
+};
+
+const getProductImageSource = (product) => {
+  if (isImageSource(product?.image)) return product.image;
+  if (isImageSource(product?.icon)) return product.icon;
+  return '';
+};
+
+const getProductDisplayIcon = (product) => {
+  const imageSource = getProductImageSource(product);
+  if (imageSource) return null;
+  if (typeof product?.icon === 'string' && product.icon.trim() && !product.icon.startsWith('data:image/')) {
+    return product.icon;
+  }
+  if (typeof product?.image === 'string' && product.image.trim() && !product.image.startsWith('data:image/')) {
+    return product.image;
+  }
+  return '📦';
+};
+
+const normalizeProduct = (product = {}) => {
+  const costPrice = Number(product.costPrice) || 0;
+  const retailPrice = Number(product.retailPrice) || 0;
+  const stock = Number(product.stock) || 0;
+  const reorderLevel = Number(product.reorderLevel) || 0;
+  const tingiPrice = Number(product.tingiPrice) || 0;
+
+  const imageValue = isImageSource(product.image) ? product.image : isImageSource(product.icon) ? product.icon : '';
+  const iconValue = imageValue ? '📦' : (typeof product.icon === 'string' && product.icon.trim() && !product.icon.startsWith('data:image/')) ? product.icon : '📦';
+
+  return {
+    ...product,
+    id: product.id || `P-${Math.floor(100 + Math.random() * 900)}`,
+    name: product.name || 'New Product',
+    category: product.category || 'Uncategorized',
+    costPrice,
+    retailPrice,
+    stock,
+    reorderLevel,
+    unit: product.unit || 'pcs',
+    barcode: product.barcode || '',
+    image: imageValue,
+    icon: iconValue,
+    hasTingi: Boolean(product.hasTingi),
+    tingiPrice,
+    barcodeText: product.barcode || ''
+  };
+};
+
 const INITIAL_SALES = [
   {
     id: 'TRX-8821',
@@ -321,7 +377,7 @@ export default function App() {
       setTheme(data.theme || 'light');
       setSetupComplete(Boolean(data.setupComplete));
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
-      setProducts(data.products || INITIAL_PRODUCTS);
+      setProducts((data.products || INITIAL_PRODUCTS).map(normalizeProduct));
       setCategories(data.categories || INITIAL_CATEGORIES);
       setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
       setSalesHistory(data.sales || INITIAL_SALES);
@@ -330,7 +386,7 @@ export default function App() {
       setTheme('light');
       setSetupComplete(false);
       setStoreProfile(DEFAULT_STORE_PROFILE);
-      setProducts(INITIAL_PRODUCTS);
+      setProducts(INITIAL_PRODUCTS.map(normalizeProduct));
       setCategories(INITIAL_CATEGORIES);
       setCustomers(INITIAL_CUSTOMERS.map(normalizeCustomer));
       setSalesHistory(INITIAL_SALES);
@@ -421,6 +477,8 @@ export default function App() {
     });
   };
 
+  const getItemCount = () => cart.reduce((a, b) => a + b.quantity, 0);
+
   const handleDeleteCategory = (categoryToDelete) => {
     if (!categoryToDelete || categoryToDelete === 'All' || categoryToDelete === 'Uncategorized') return;
 
@@ -462,6 +520,8 @@ export default function App() {
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
   const [restockProduct, setRestockProduct] = useState(null);
   const [restockQty, setRestockQty] = useState('');
+  const [restockCostPrice, setRestockCostPrice] = useState('');
+  const [restockRetailPrice, setRestockRetailPrice] = useState('');
 
   // Utang Customer CRUD Modals State
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
@@ -502,7 +562,7 @@ export default function App() {
       setTheme(data.theme || 'light');
       setSetupComplete(Boolean(data.setupComplete));
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
-      setProducts(data.products || INITIAL_PRODUCTS);
+      setProducts((data.products || INITIAL_PRODUCTS).map(normalizeProduct));
       setCategories(data.categories || INITIAL_CATEGORIES);
       setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
       setSalesHistory(data.sales || INITIAL_SALES);
@@ -756,19 +816,22 @@ export default function App() {
 
   // Product CRUD Handlers
   const handleSaveProduct = (productData) => {
+    const normalizedProduct = normalizeProduct({
+      ...productData,
+      costPrice: Number(productData.costPrice) || 0,
+      retailPrice: Number(productData.retailPrice) || 0,
+      stock: Number(productData.stock) || 0
+    });
+
     if (editingProduct) {
       setProducts((prev) =>
-        prev.map((p) => (p.id === editingProduct.id ? { ...editingProduct, ...productData } : p))
+        prev.map((p) => (p.id === editingProduct.id ? normalizeProduct({ ...p, ...normalizedProduct }) : p))
       );
-      showToast(`Updated product ${productData.name}`);
+      showToast(`Updated product ${normalizedProduct.name}`);
     } else {
-      const newProd = {
-        ...productData,
-        id: `P-${Math.floor(100 + Math.random() * 900)}`,
-        icon: productData.icon || '📦'
-      };
+      const newProd = normalizeProduct({ ...normalizedProduct, id: `P-${Math.floor(100 + Math.random() * 900)}` });
       setProducts((prev) => [newProd, ...prev]);
-      showToast(`New item added: ${productData.name}`);
+      showToast(`New item added: ${normalizedProduct.name}`);
     }
     setIsProductModalOpen(false);
     setEditingProduct(null);
@@ -789,14 +852,34 @@ export default function App() {
       return;
     }
 
+    const nextCost = parseFloat(restockCostPrice);
+    const nextRetail = parseFloat(restockRetailPrice);
+    const nextTingiPrice = parseFloat(restockProduct.tingiPrice || 0);
+    const nextTingiRatio = Number(restockProduct.tingiRatio) || 1;
+
     setProducts((prev) =>
-      prev.map((p) => (p.id === restockProduct.id ? { ...p, stock: p.stock + qty } : p))
+      prev.map((p) => {
+        if (p.id !== restockProduct.id) return p;
+
+        const updated = {
+          ...p,
+          stock: (Number(p.stock) || 0) + qty,
+          costPrice: Number.isNaN(nextCost) ? Number(p.costPrice) || 0 : nextCost,
+          retailPrice: Number.isNaN(nextRetail) ? Number(p.retailPrice) || 0 : nextRetail,
+          tingiPrice: Number.isNaN(nextTingiPrice) ? Number(p.tingiPrice) || 0 : nextTingiPrice,
+          tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1
+        };
+
+        return normalizeProduct(updated);
+      })
     );
 
     showToast(`Added +${qty} units to ${restockProduct.name}`);
     setIsRestockModalOpen(false);
     setRestockProduct(null);
     setRestockQty('');
+    setRestockCostPrice('');
+    setRestockRetailPrice('');
   };
 
   // Utang Customer CRUD & Payment Handlers
@@ -1001,21 +1084,12 @@ export default function App() {
 
           <div className="flex items-center space-x-1.5">
             <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="p-2 rounded-xl hover:bg-black/10 transition"
-            >
-              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
-            </button>
-            <div className="bg-white/20 backdrop-blur-xs px-2 py-1 rounded-xl text-[10px] font-bold flex items-center space-x-1">
-              <Sparkles className="w-3 h-3" />
-              <span>Tingi Mode</span>
-            </div>
-            <button
+              type="button"
+              aria-label="Open settings"
               onClick={() => setActiveTab('settings')}
-              className="flex items-center gap-1 rounded-xl bg-white/15 px-2 py-1 text-[10px] font-bold hover:bg-white/25 transition"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition"
             >
-              <Settings className="w-3.5 h-3.5" />
-              <span>Settings</span>
+              <Settings className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -1106,29 +1180,25 @@ export default function App() {
           )}
         </div>
 
-        {/* Floating Quick Cart Toggle Button (Only on Register Tab) */}
-        {activeTab === 'register' && cart.length > 0 && !isCartOpen && (
-          <div className="absolute bottom-16 left-3 right-3 z-30 animate-bounce-short">
+        {/* Floating Quick Cart Toggle Button */}
+        {cart.length > 0 && !isCartOpen && (
+          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 animate-bounce-short">
             <button
+              type="button"
+              aria-label="Open cart"
               onClick={() => setIsCartOpen(true)}
-              className="w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between transform transition active:scale-[0.98]"
+              className="relative h-16 w-16 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 text-white shadow-[0_12px_30px_rgba(245,158,11,0.45)] flex items-center justify-center border-4 border-white/80 transition hover:scale-[1.02] active:scale-[0.96]"
             >
-              <div className="flex items-center space-x-3">
-                <div className="bg-white/20 px-2.5 py-1 rounded-xl text-xs font-black">
-                  {cart.reduce((a, b) => a + b.quantity, 0)} items
-                </div>
-                <span className="text-sm font-bold">View Cart Order</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <span className="text-base font-black">₱{totalAmount.toFixed(2)}</span>
-                <ChevronUp className="w-5 h-5" />
-              </div>
+              <ShoppingCart className="w-7 h-7 drop-shadow-sm" />
+              <span className="absolute -top-1 -right-1 min-w-6 h-6 px-1 rounded-full bg-slate-900 text-[10px] font-black text-white flex items-center justify-center ring-2 ring-white shadow-md">
+                {getItemCount()}
+              </span>
             </button>
           </div>
         )}
 
         {/* Cart Slide-up Bottom Drawer */}
-        {isCartOpen && activeTab === 'register' && (
+        {isCartOpen && (
           <CartDrawer
             theme={theme}
             cart={cart}
@@ -1189,6 +1259,10 @@ export default function App() {
             product={restockProduct}
             restockQty={restockQty}
             setRestockQty={setRestockQty}
+            restockCostPrice={restockCostPrice}
+            setRestockCostPrice={setRestockCostPrice}
+            restockRetailPrice={restockRetailPrice}
+            setRestockRetailPrice={setRestockRetailPrice}
             onConfirm={handleRestockSubmit}
             onClose={() => setIsRestockModalOpen(false)}
           />
@@ -1395,7 +1469,13 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-2xl">{item.icon}</span>
+                  <div className="w-8 h-8 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 flex items-center justify-center">
+                    {item.image ? (
+                      <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-xl">{item.icon || '📦'}</span>
+                    )}
+                  </div>
                   <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
                     isOut
                       ? 'bg-red-500/10 text-red-500'
@@ -1792,7 +1872,11 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
               }`}
             >
               <div className="flex items-center space-x-2.5">
-                <span className="text-2xl">{p.icon}</span>
+                {getProductImageSource(p) ? (
+                  <img src={getProductImageSource(p)} alt={p.name} className="h-10 w-10 rounded-xl object-cover border border-slate-200 dark:border-slate-700" />
+                ) : (
+                  <span className="text-2xl">{getProductDisplayIcon(p)}</span>
+                )}
                 <div>
                   <h4 className="font-bold text-xs">{p.name}</h4>
                   <div className="text-[10px] text-slate-400 space-x-2">
@@ -1843,21 +1927,106 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     reorderLevel: product?.reorderLevel || 5,
     unit: product?.unit || 'pcs',
     barcode: product?.barcode || '',
-    icon: product?.icon || '📦',
+    image: product?.image || product?.icon || '',
+    icon: product?.icon || product?.image || '📦',
     hasTingi: product?.hasTingi || false,
-    tingiPrice: product?.tingiPrice || ''
+    tingiPrice: product?.tingiPrice || '',
+    tingiRatio: product?.tingiRatio || 1
   });
+  const [cameraError, setCameraError] = useState('');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (!isScannerOpen) return undefined;
+
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera barcode scanning is not available on this device.');
+      setIsScannerOpen(false);
+      return undefined;
+    }
+
+    let stream;
+    let cancelled = false;
+    let frameHandle;
+
+    const startScan = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code'] });
+
+        const detectLoop = async () => {
+          if (cancelled) return;
+          try {
+            if (videoRef.current && videoRef.current.readyState >= 2) {
+              const barcode = await detector.detect(videoRef.current);
+              if (barcode && barcode.length > 0) {
+                const detectedCode = barcode[0]?.rawValue || '';
+                if (detectedCode) {
+                  setFormData((prev) => ({ ...prev, barcode: detectedCode }));
+                  setCameraError('');
+                  setIsScannerOpen(false);
+                  stream.getTracks().forEach((track) => track.stop());
+                  return;
+                }
+              }
+            }
+          } catch (error) {
+            console.warn('Barcode detection failed:', error);
+          }
+
+          frameHandle = requestAnimationFrame(detectLoop);
+        };
+
+        detectLoop();
+      } catch (error) {
+        console.error('Camera open failed:', error);
+        setCameraError('Camera access failed. You can still type the barcode manually.');
+        setIsScannerOpen(false);
+      }
+    };
+
+    startScan();
+
+    return () => {
+      cancelled = true;
+      if (frameHandle) cancelAnimationFrame(frameHandle);
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [isScannerOpen]);
+
+  const handleImageUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result;
+      setFormData((prev) => ({ ...prev, image: String(base64), icon: String(base64) }));
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.name || !formData.retailPrice) return;
+    if (!formData.name) return;
+
     onSave({
       ...formData,
       costPrice: parseFloat(formData.costPrice) || 0,
       retailPrice: parseFloat(formData.retailPrice) || 0,
       stock: parseFloat(formData.stock) || 0,
       reorderLevel: parseFloat(formData.reorderLevel) || 5,
-      tingiPrice: parseFloat(formData.tingiPrice) || 0
+      tingiPrice: parseFloat(formData.tingiPrice) || 0,
+      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1,
+      image: formData.image || formData.icon || ''
     });
   };
 
@@ -1901,44 +2070,55 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
               </select>
             </div>
             <div>
-              <label className="font-bold text-slate-500 block">Emoji / Icon</label>
+              <label className="font-bold text-slate-500 block">Barcode</label>
               <input
                 type="text"
-                value={formData.icon}
-                onChange={(e) => setFormData({ ...formData, icon: e.target.value })}
-                className={`w-full p-2 rounded-xl border text-center font-bold ${
+                value={formData.barcode}
+                onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                className={`w-full p-2 rounded-xl border font-bold ${
                   theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
                 }`}
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="font-bold text-slate-500 block">Puhunan (₱)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={formData.costPrice}
-                onChange={(e) => setFormData({ ...formData, costPrice: e.target.value })}
-                className={`w-full p-2 rounded-xl border font-bold ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
-              />
+          <div>
+            <label className="font-bold text-slate-500 block">Image sa Paninda</label>
+            <div className="flex gap-2">
+              <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-2 py-2 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                <ImageUp className="w-3.5 h-3.5" />
+                <span>Upload</span>
+                <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+              </label>
+              <button
+                type="button"
+                onClick={() => setIsScannerOpen(true)}
+                className="flex items-center justify-center gap-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-2 text-[10px] font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                Scan
+              </button>
             </div>
-            <div>
-              <label className="font-bold text-slate-500 block">Presyo ng Benta (₱)</label>
-              <input
-                type="number"
-                step="0.01"
-                required
-                value={formData.retailPrice}
-                onChange={(e) => setFormData({ ...formData, retailPrice: e.target.value })}
-                className={`w-full p-2 rounded-xl border font-bold ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
-              />
-            </div>
+            <input
+              type="url"
+              value={formData.image}
+              onChange={(e) => setFormData({ ...formData, image: e.target.value, icon: e.target.value || '📦' })}
+              placeholder="https://..."
+              className={`mt-2 w-full p-2 rounded-xl border font-bold ${
+                theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+              }`}
+            />
+            {formData.image && (
+              <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-800">
+                <img src={formData.image} alt="Product preview" className="h-20 w-full object-cover rounded-lg" />
+              </div>
+            )}
+            {cameraError && <p className="mt-2 text-[10px] text-red-500">{cameraError}</p>}
+            {isScannerOpen && (
+              <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
+                <video ref={videoRef} className="h-32 w-full object-cover" muted playsInline autoPlay />
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -1977,17 +2157,32 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
             </label>
 
             {formData.hasTingi && (
-              <div className="mt-1.5">
-                <label className="font-bold text-slate-500 block">Presyo ng Tingi (₱)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={formData.tingiPrice}
-                  onChange={(e) => setFormData({ ...formData, tingiPrice: e.target.value })}
-                  className={`w-full p-2 rounded-xl border font-bold ${
-                    theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                  }`}
-                />
+              <div className="mt-2 space-y-2">
+                <div>
+                  <label className="font-bold text-slate-500 block">Presyo ng Tingi (₱)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={formData.tingiPrice}
+                    onChange={(e) => setFormData({ ...formData, tingiPrice: e.target.value })}
+                    className={`w-full p-2 rounded-xl border font-bold ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-500 block">Tingi effect sa stock (1 pack = X sachets)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={formData.tingiRatio}
+                    onChange={(e) => setFormData({ ...formData, tingiRatio: e.target.value })}
+                    className={`w-full p-2 rounded-xl border font-bold ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -2004,7 +2199,7 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
   );
 }
 
-function RestockModal({ theme, product, restockQty, setRestockQty, onConfirm, onClose }) {
+function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, onConfirm, onClose }) {
   return (
     <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
       <div className={`w-full max-w-xs rounded-3xl p-4 space-y-3 ${
@@ -2013,15 +2208,68 @@ function RestockModal({ theme, product, restockQty, setRestockQty, onConfirm, on
         <h3 className="font-black text-sm">Stock In: {product.name}</h3>
         <p className="text-xs text-slate-400">Magdagdag ng karagdagang stock sa bodega.</p>
 
-        <input
-          type="number"
-          placeholder="Bilang ng Idadagdag (e.g. 24)"
-          value={restockQty}
-          onChange={(e) => setRestockQty(e.target.value)}
-          className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-            theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-          }`}
-        />
+        <div className="space-y-2">
+          <input
+            type="number"
+            placeholder="Bilang ng Idadagdag (e.g. 24)"
+            value={restockQty}
+            onChange={(e) => setRestockQty(e.target.value)}
+            className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+              theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+            }`}
+          />
+          <input
+            type="number"
+            step="0.01"
+            placeholder="Bagong Puhunan (₱)"
+            value={restockCostPrice}
+            onChange={(e) => setRestockCostPrice(e.target.value)}
+            className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+              theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+            }`}
+          />
+          <input
+            type="number"
+            step="0.01"
+            placeholder="Bagong Presyo ng Benta (₱)"
+            value={restockRetailPrice}
+            onChange={(e) => setRestockRetailPrice(e.target.value)}
+            className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+              theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+            }`}
+          />
+          {product.hasTingi && (
+            <>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Bagong Presyo ng Tingi (₱)"
+                value={product.tingiPrice || ''}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  product.tingiPrice = Number.isNaN(next) ? 0 : next;
+                }}
+                className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                }`}
+              />
+              <input
+                type="number"
+                min="1"
+                step="1"
+                placeholder="1 pack = x sachets / units"
+                value={product.tingiRatio || 1}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  product.tingiRatio = next > 0 ? next : 1;
+                }}
+                className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                }`}
+              />
+            </>
+          )}
+        </div>
 
         <div className="flex space-x-2 pt-1">
           <button onClick={onClose} className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300">
@@ -2284,14 +2532,6 @@ function SettingsView({ theme, setTheme, storeProfile, categories, onAddCategory
 
         <div className="space-y-3">
           <button
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="flex w-full items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-left text-sm font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
-          >
-            <span>{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}</span>
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
-
-          <button
             onClick={onResetDatabase}
             className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
           >
@@ -2538,7 +2778,14 @@ function AnalyticsDashboardView({ theme, sales, products, customers }) {
           <div key={p.id} className="flex items-center justify-between py-1">
             <div className="flex items-center space-x-2">
               <span className="font-black text-amber-500">#{idx + 1}</span>
-              <span>{p.icon} {p.name}</span>
+              <div className="flex items-center gap-2">
+                {getProductImageSource(p) ? (
+                  <img src={getProductImageSource(p)} alt={p.name} className="h-6 w-6 rounded-md object-cover border border-slate-200 dark:border-slate-700" />
+                ) : (
+                  <span className="text-base">{getProductDisplayIcon(p)}</span>
+                )}
+                <span>{p.name}</span>
+              </div>
             </div>
             <span className="font-bold text-slate-400">₱{p.retailPrice.toFixed(2)}</span>
           </div>
