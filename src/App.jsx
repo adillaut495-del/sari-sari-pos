@@ -1440,9 +1440,6 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
                 if (code) {
                   onBarcodeScan(code);
                   setCameraError('');
-                  setIsScannerOpen(false);
-                  if (stream) stream.getTracks().forEach((track) => track.stop());
-                  return;
                 }
               }
             }
