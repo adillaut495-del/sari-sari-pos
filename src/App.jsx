@@ -1204,7 +1204,7 @@ export default function App() {
 
         {/* Floating Quick Cart Toggle Button */}
         {cart.length > 0 && !isCartOpen && (
-          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 animate-bounce-short">
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 animate-bounce-short">
             <button
               type="button"
               aria-label="Open cart"
@@ -1486,98 +1486,101 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
   };
 
   return (
-    <div className="p-3 space-y-3 flex-1 flex flex-col pb-20">
-      
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900 dark:bg-amber-950/40">
-        <div className="flex items-center gap-2">
-          <form onSubmit={handleBarcodeSubmit} className="flex-1 flex items-center gap-2">
-            <input
-              type="text"
-              value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value)}
-              placeholder="Scan or type barcode"
-              className={`flex-1 rounded-xl border px-3 py-2 text-[11px] font-bold outline-none ${
-                theme === 'dark'
-                  ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400'
-                  : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
-              }`}
-            />
+    <div className="flex h-full flex-col pb-20">
+      <div className={`sticky top-0 z-20 -mx-3 px-3 pb-2 pt-1 backdrop-blur-md ${theme === 'dark' ? 'bg-slate-950/75' : 'bg-slate-50/90'}`}>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900 dark:bg-amber-950/40">
+          <div className="flex items-center gap-2">
+            <form onSubmit={handleBarcodeSubmit} className="flex-1 flex items-center gap-2">
+              <input
+                type="text"
+                value={barcodeInput}
+                onChange={(e) => setBarcodeInput(e.target.value)}
+                placeholder="Scan or type barcode"
+                className={`flex-1 rounded-xl border px-3 py-2 text-[11px] font-bold outline-none ${
+                  theme === 'dark'
+                    ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400'
+                    : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                }`}
+              />
+              <button
+                type="submit"
+                className="rounded-xl bg-amber-500 px-3 py-2 text-[10px] font-black text-white shadow-sm"
+              >
+                Add
+              </button>
+            </form>
             <button
-              type="submit"
-              className="rounded-xl bg-amber-500 px-3 py-2 text-[10px] font-black text-white shadow-sm"
+              type="button"
+              onClick={() => setIsScannerOpen((prev) => !prev)}
+              className={`rounded-xl border px-2.5 py-2 text-[10px] font-black ${
+                isScannerOpen
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                  : 'border-amber-300 bg-white text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300'
+              }`}
             >
-              Add
+              <div className="flex items-center gap-1">
+                <QrCode className="w-3.5 h-3.5" />
+                <span>{isScannerOpen ? 'Live' : 'Scan'}</span>
+              </div>
             </button>
-          </form>
-          <button
-            type="button"
-            onClick={() => setIsScannerOpen((prev) => !prev)}
-            className={`rounded-xl border px-2.5 py-2 text-[10px] font-black ${
-              isScannerOpen
-                ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
-                : 'border-amber-300 bg-white text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300'
-            }`}
-          >
-            <div className="flex items-center gap-1">
-              <QrCode className="w-3.5 h-3.5" />
-              <span>{isScannerOpen ? 'Live' : 'Scan'}</span>
+          </div>
+
+          {cameraError && <p className="mt-2 text-[10px] text-red-500">{cameraError}</p>}
+          {isScannerOpen && (
+            <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
+              <video ref={videoRef} className="h-32 w-full object-cover" muted playsInline autoPlay />
             </div>
-          </button>
+          )}
         </div>
 
-        {cameraError && <p className="mt-2 text-[10px] text-red-500">{cameraError}</p>}
-        {isScannerOpen && (
-          <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
-            <video ref={videoRef} className="h-32 w-full object-cover" muted playsInline autoPlay />
-          </div>
-        )}
-      </div>
-
-      {/* Search Input Bar */}
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-        <input
-          type="text"
-          placeholder="Search Piattos, Lucky Me, Coca-Cola, Barcode..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className={`w-full pl-10 pr-9 py-2.5 rounded-2xl text-xs font-semibold border outline-none transition ${
-            theme === 'dark'
-              ? 'bg-slate-800/90 border-slate-700 text-white placeholder-slate-500 focus:border-amber-500'
-              : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500 shadow-xs'
-          }`}
-        />
-        {searchQuery && (
-          <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </div>
-
-      {/* Category Pills horizontal scroll */}
-      <div className="flex space-x-1.5 overflow-x-auto no-scrollbar py-0.5 -mx-1 px-1">
-        {categories.map((cat) => {
-          const isSel = selectedCategory === cat;
-          return (
-            <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                isSel
-                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/20 scale-[1.02]'
-                  : theme === 'dark'
-                  ? 'bg-slate-800 text-slate-400 border border-slate-700 hover:text-white'
-                  : 'bg-white text-slate-600 border border-slate-200 hover:text-slate-900 shadow-2xs'
+        <div className="pt-3">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search Piattos, Lucky Me, Coca-Cola, Barcode..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={`w-full pl-10 pr-9 py-2.5 rounded-2xl text-xs font-semibold border outline-none transition ${
+                theme === 'dark'
+                  ? 'bg-slate-800/90 border-slate-700 text-white placeholder-slate-500 focus:border-amber-500'
+                  : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500 shadow-xs'
               }`}
-            >
-              {cat}
-            </button>
-          );
-        })}
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="pt-3">
+          <div className="flex space-x-1.5 overflow-x-auto no-scrollbar py-0.5 -mx-1 px-1">
+            {categories.map((cat) => {
+              const isSel = selectedCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                    isSel
+                      ? 'bg-amber-500 text-white shadow-md shadow-amber-500/20 scale-[1.02]'
+                      : theme === 'dark'
+                      ? 'bg-slate-800 text-slate-400 border border-slate-700 hover:text-white'
+                      : 'bg-white text-slate-600 border border-slate-200 hover:text-slate-900 shadow-2xs'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* Item Grid */}
-      <div className="grid grid-cols-2 gap-2.5 pt-1">
+      <div className="flex-1 overflow-y-auto px-3 pt-3">
+        <div className="grid grid-cols-2 gap-2.5 pt-1">
         {filteredProducts.map((item) => {
           const isOut = item.stock <= 0;
           const isLow = item.stock > 0 && item.stock <= item.reorderLevel;
@@ -1669,12 +1672,13 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
         })}
       </div>
 
-      {filteredProducts.length === 0 && (
-        <div className="py-12 text-center text-slate-400 space-y-2">
-          <Package className="w-10 h-10 mx-auto stroke-1" />
-          <p className="text-xs font-medium">Walang nahanap na paninda.</p>
-        </div>
-      )}
+        {filteredProducts.length === 0 && (
+          <div className="py-12 text-center text-slate-400 space-y-2">
+            <Package className="w-10 h-10 mx-auto stroke-1" />
+            <p className="text-xs font-medium">Walang nahanap na paninda.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

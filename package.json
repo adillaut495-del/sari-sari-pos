@@ -15,6 +15,7 @@
     "start:local": "concurrently \"npm run preview:frontend\" \"npm run dev:server\""
   },
   "dependencies": {
+    "better-sqlite3": "^11.9.1",
     "concurrently": "^10.0.5",
     "cors": "^2.8.6",
     "express": "^5.2.1",

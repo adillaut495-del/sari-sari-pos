@@ -3,13 +3,29 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = 4174;
-const databaseFile = path.join(__dirname, 'data', 'pos-db.json');
+const databaseFile = path.join(__dirname, 'data', 'pos.db');
+
+const dbDirectory = path.dirname(databaseFile);
+if (!fs.existsSync(dbDirectory)) {
+  fs.mkdirSync(dbDirectory, { recursive: true });
+}
+
+const db = new Database(databaseFile, { fileMustExist: false });
+
+db.pragma('journal_mode = WAL');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_state (
+    id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL
+  );
+`);
 
 const DEFAULT_STORE_PROFILE = {
   storeName: 'Tindahan ni Ate Inday',
@@ -66,11 +82,8 @@ function normalizeProduct(product = {}) {
   };
 }
 
-function ensureDbDir() {
-  const dir = path.dirname(databaseFile);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+function getInitialFreshData() {
+  return JSON.parse(JSON.stringify(INITIAL_DATA));
 }
 
 function normalizeData(data) {
@@ -93,45 +106,46 @@ function normalizeData(data) {
   return normalized;
 }
 
-function readData() {
-  ensureDbDir();
+function ensureInitialRow() {
+  const existing = db.prepare("SELECT payload FROM app_state WHERE id = 'main'").get();
+  if (!existing) {
+    db.prepare("INSERT INTO app_state (id, payload) VALUES ('main', ?) ").run(JSON.stringify(getInitialFreshData()));
+  }
+}
 
-  if (!fs.existsSync(databaseFile)) {
+function readData() {
+  ensureInitialRow();
+
+  const row = db.prepare("SELECT payload FROM app_state WHERE id = 'main'").get();
+  if (!row || !row.payload) {
     const fresh = getInitialFreshData();
-    fs.writeFileSync(databaseFile, JSON.stringify(fresh, null, 2), 'utf8');
-    return JSON.parse(JSON.stringify(fresh));
+    writeData(fresh);
+    return fresh;
   }
 
   try {
-    const raw = fs.readFileSync(databaseFile, 'utf8');
-    if (!raw) {
-      const fresh = getInitialFreshData();
-      fs.writeFileSync(databaseFile, JSON.stringify(fresh, null, 2), 'utf8');
-      return JSON.parse(JSON.stringify(fresh));
-    }
-
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(row.payload);
     const normalized = normalizeData(parsed);
 
-    if (JSON.stringify(normalized) !== raw) {
-      fs.writeFileSync(databaseFile, JSON.stringify(normalized, null, 2), 'utf8');
+    if (JSON.stringify(normalized) !== row.payload) {
+      writeData(normalized);
     }
 
     return normalized;
   } catch (error) {
     const fresh = getInitialFreshData();
-    fs.writeFileSync(databaseFile, JSON.stringify(fresh, null, 2), 'utf8');
-    return JSON.parse(JSON.stringify(fresh));
+    writeData(fresh);
+    return fresh;
   }
 }
 
 function writeData(data) {
-  ensureDbDir();
-  fs.writeFileSync(databaseFile, JSON.stringify(data, null, 2), 'utf8');
-}
+  const normalized = normalizeData(data);
+  db.prepare(
+    "INSERT INTO app_state (id, payload) VALUES ('main', ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload"
+  ).run(JSON.stringify(normalized));
 
-function getInitialFreshData() {
-  return JSON.parse(JSON.stringify(INITIAL_DATA));
+  return normalized;
 }
 
 app.use(cors());
@@ -156,8 +170,8 @@ app.put('/api/db', (req, res) => {
     storeProfile: incoming.storeProfile || current.storeProfile || DEFAULT_STORE_PROFILE
   };
 
-  writeData(merged);
-  res.json({ success: true, data: merged });
+  const next = writeData(merged);
+  res.json({ success: true, data: next });
 });
 
 app.post('/api/reset-db', (req, res) => {
@@ -168,4 +182,14 @@ app.post('/api/reset-db', (req, res) => {
 
 app.listen(port, '0.0.0.0', () => {
   console.log(`Local POS database server running at http://0.0.0.0:${port}`);
+});
+
+process.on('SIGINT', () => {
+  db.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  db.close();
+  process.exit(0);
 });
