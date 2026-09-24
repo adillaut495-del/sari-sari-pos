@@ -254,6 +254,8 @@ const DEFAULT_STORE_PROFILE = {
   currency: 'PHP'
 };
 
+const CART_STORAGE_KEY = 'sari-sari-pos-cart';
+
 const isImageSource = (value) => {
   if (typeof value !== 'string') return false;
   const trimmed = value.trim();
@@ -461,11 +463,28 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('register'); // 'register', 'products', 'utang', 'sales', 'analytics', 'settings'
 
   // Cart State for Register View
-  const [cart, setCart] = useState([]);
+  const [cart, setCart] = useState(() => {
+    try {
+      const savedCart = window.localStorage.getItem(CART_STORAGE_KEY);
+      const parsedCart = savedCart ? JSON.parse(savedCart) : [];
+      return Array.isArray(parsedCart) ? parsedCart : [];
+    } catch (error) {
+      console.error('Cart restore failed:', error);
+      return [];
+    }
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [discountPercent, setDiscountPercent] = useState(0); // e.g., Senior 20%
   const [isCartOpen, setIsCartOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart));
+    } catch (error) {
+      console.error('Cart save failed:', error);
+    }
+  }, [cart]);
 
   const handleAddCategory = (newCategory) => {
     const trimmed = (newCategory || '').trim();
@@ -1685,8 +1704,8 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
 
 function CartDrawer({ theme, cart, updateCartQty, removeFromCart, discountPercent, setDiscountPercent, subtotal, discountAmount, totalAmount, onClose, onCheckout }) {
   return (
-    <div className="absolute inset-0 bg-black/60 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
-      <div className={`w-full max-h-[78%] rounded-t-[32px] p-4 pb-20 flex flex-col shadow-2xl transition-colors ${
+    <div className="fixed inset-0 bg-black/60 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
+      <div className={`w-full max-h-[78vh] rounded-t-[32px] p-4 pb-4 flex flex-col shadow-2xl transition-colors ${
         theme === 'dark' ? 'bg-slate-900 text-white border-t border-slate-800' : 'bg-white text-slate-900'
       }`}>
         
