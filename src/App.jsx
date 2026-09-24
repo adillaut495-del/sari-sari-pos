@@ -28,6 +28,7 @@ import {
   ChevronUp,
   FileText,
   ShieldAlert,
+  ArrowLeft,
   ArrowRight,
   TrendingUp,
   BookOpen,
@@ -317,6 +318,7 @@ const normalizeProduct = (product = {}) => {
   const stock = Number(product.stock) || 0;
   const reorderLevel = Number(product.reorderLevel) || 0;
   const tingiPrice = Number(product.tingiPrice) || 0;
+  const stockLedger = Array.isArray(product.stockLedger) ? product.stockLedger : [];
 
   const imageValue = isImageSource(product.image) ? product.image : isImageSource(product.icon) ? product.icon : '';
   const iconValue = imageValue ? '📦' : (typeof product.icon === 'string' && product.icon.trim() && !product.icon.startsWith('data:image/')) ? product.icon : '📦';
@@ -325,6 +327,8 @@ const normalizeProduct = (product = {}) => {
     ...product,
     id: product.id || `P-${Math.floor(100 + Math.random() * 900)}`,
     name: product.name || 'New Product',
+    brand: product.brand || '',
+    packageSize: product.packageSize || '',
     category: product.category || 'Uncategorized',
     costPrice,
     retailPrice,
@@ -336,7 +340,8 @@ const normalizeProduct = (product = {}) => {
     icon: iconValue,
     hasTingi: Boolean(product.hasTingi),
     tingiPrice,
-    barcodeText: product.barcode || ''
+    barcodeText: product.barcode || '',
+    stockLedger
   };
 };
 
@@ -568,6 +573,8 @@ export default function App() {
   // Product CRUD Modals State
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null); // null = Add, Object = Edit
+  const [pendingScannedProduct, setPendingScannedProduct] = useState(null);
+  const [scanQuantity, setScanQuantity] = useState(1);
 
   // Stock In Modal State
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
@@ -628,6 +635,7 @@ export default function App() {
   };
 
   const handleBarcodeScan = (barcodeValue) => {
+    if (pendingScannedProduct) return;
     const code = String(barcodeValue || '').trim();
     if (!code) return;
 
@@ -637,8 +645,14 @@ export default function App() {
       return;
     }
 
+    if (foundProduct.stock <= 0) {
+      showToast(`Out of stock: ${foundProduct.name}`, 'error');
+      return;
+    }
+
     playScanSuccessSound();
-    addToCart(foundProduct, false);
+    setPendingScannedProduct(foundProduct);
+    setScanQuantity(1);
   };
 
   // Cart Calculations
@@ -655,10 +669,11 @@ export default function App() {
   }, [subtotal, discountAmount]);
 
   // Cart Actions
-  const addToCart = (product, isTingi = false) => {
+  const addToCart = (product, isTingi = false, quantity = 1) => {
     const itemPrice = isTingi ? product.tingiPrice : product.retailPrice;
     const itemName = isTingi ? `${product.name} (Tingi / Sachet)` : product.name;
     const cartItemId = isTingi ? `${product.id}-tingi` : product.id;
+    const requestedQuantity = Math.max(1, Number(quantity) || 1);
 
     if (product.stock <= 0) {
       showToast(`Out of stock: ${product.name}`, 'error');
@@ -668,12 +683,12 @@ export default function App() {
     setCart((prev) => {
       const existing = prev.find((i) => i.cartItemId === cartItemId);
       if (existing) {
-        if (existing.quantity >= product.stock) {
+        if (existing.quantity + requestedQuantity > product.stock) {
           showToast(`Limit reached for current stock level!`, 'error');
           return prev;
         }
         return prev.map((i) =>
-          i.cartItemId === cartItemId ? { ...i, quantity: i.quantity + 1 } : i
+          i.cartItemId === cartItemId ? { ...i, quantity: i.quantity + requestedQuantity } : i
         );
       }
       return [
@@ -683,14 +698,21 @@ export default function App() {
           productId: product.id,
           name: itemName,
           itemPrice,
-          quantity: 1,
+          quantity: Math.min(requestedQuantity, product.stock),
           isTingi,
           baseProduct: product
         }
       ];
     });
 
-    showToast(`Added ₱${itemPrice.toFixed(2)} - ${itemName}`);
+    showToast(`Added ${requestedQuantity}x - ₱${(itemPrice * requestedQuantity).toFixed(2)} - ${itemName}`);
+  };
+
+  const handleScanQuantityConfirm = () => {
+    if (!pendingScannedProduct) return;
+    addToCart(pendingScannedProduct, false, scanQuantity);
+    setPendingScannedProduct(null);
+    setScanQuantity(1);
   };
 
   const updateCartQty = (cartItemId, delta) => {
@@ -777,7 +799,21 @@ export default function App() {
         });
 
         const newStock = Math.max(0, Math.round((prod.stock - totalStockDeduction) * 100) / 100);
-        return { ...prod, stock: newStock };
+        return normalizeProduct({
+          ...prod,
+          stock: newStock,
+          stockLedger: [
+            {
+              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              type: 'sale',
+              quantity: -totalStockDeduction,
+              date: new Date().toISOString(),
+              reference: newOrder.id,
+              description: `Sold through ${newOrder.id}`
+            },
+            ...(Array.isArray(prod.stockLedger) ? prod.stockLedger : [])
+          ]
+        });
       })
     );
 
@@ -845,7 +881,21 @@ export default function App() {
           stockToAdd = itemInOrder.quantity / prod.tingiRatio;
         }
 
-        return { ...prod, stock: Math.round((prod.stock + stockToAdd) * 100) / 100 };
+        return normalizeProduct({
+          ...prod,
+          stock: Math.round((prod.stock + stockToAdd) * 100) / 100,
+          stockLedger: [
+            {
+              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              type: 'void',
+              quantity: stockToAdd,
+              date: new Date().toISOString(),
+              reference: order.id,
+              description: `Restocked from voided sale ${order.id}`
+            },
+            ...(Array.isArray(prod.stockLedger) ? prod.stockLedger : [])
+          ]
+        });
       })
     );
 
@@ -886,6 +936,7 @@ export default function App() {
   const handleSaveProduct = (productData) => {
     const normalizedProduct = normalizeProduct({
       ...productData,
+      stockLedger: productData.stockLedger || editingProduct?.stockLedger || [],
       costPrice: Number(productData.costPrice) || 0,
       retailPrice: Number(productData.retailPrice) || 0,
       stock: Number(productData.stock) || 0
@@ -935,7 +986,18 @@ export default function App() {
           costPrice: Number.isNaN(nextCost) ? Number(p.costPrice) || 0 : nextCost,
           retailPrice: Number.isNaN(nextRetail) ? Number(p.retailPrice) || 0 : nextRetail,
           tingiPrice: Number.isNaN(nextTingiPrice) ? Number(p.tingiPrice) || 0 : nextTingiPrice,
-          tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1
+          tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1,
+          stockLedger: [
+            {
+              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              type: 'restock',
+              quantity: qty,
+              date: new Date().toISOString(),
+              reference: `RESTOCK-${Date.now()}`,
+              description: 'Manual stock in'
+            },
+            ...(Array.isArray(p.stockLedger) ? p.stockLedger : [])
+          ]
         };
 
         return normalizeProduct(updated);
@@ -1314,6 +1376,17 @@ export default function App() {
           />
         )}
 
+        {pendingScannedProduct && (
+          <ScanQuantityModal
+            theme={theme}
+            product={pendingScannedProduct}
+            quantity={scanQuantity}
+            setQuantity={setScanQuantity}
+            onConfirm={handleScanQuantityConfirm}
+            onClose={() => setPendingScannedProduct(null)}
+          />
+        )}
+
         {/* Product Add/Edit Modal */}
         {isProductModalOpen && (
           <ProductFormModal
@@ -1687,7 +1760,7 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
                 </div>
 
                 <h3 className="font-bold text-xs leading-snug line-clamp-2">{item.name}</h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">{item.category}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">{item.brand || item.category}{item.packageSize ? ` • ${item.packageSize}` : ''}</p>
               </div>
 
               {/* Action Buttons */}
@@ -2044,7 +2117,131 @@ function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep
   );
 }
 
+function ScanQuantityModal({ theme, product, quantity, setQuantity, onConfirm, onClose }) {
+  const maxQuantity = Math.max(1, Math.floor(Number(product.stock) || 0));
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div className={`w-full max-w-xs rounded-3xl p-4 space-y-4 shadow-2xl ${
+        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
+      }`}>
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500">Barcode captured</p>
+            <h3 className="mt-1 font-black text-sm">Ilang {product.unit}?</h3>
+          </div>
+          <button onClick={onClose} className="p-1 text-slate-400" aria-label="Close quantity dialog">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="text-center">
+          <p className="font-bold text-sm">{product.brand ? `${product.brand} ` : ''}{product.name}</p>
+          {(product.packageSize || product.brand) && (
+            <p className="mt-1 text-[10px] text-slate-400">{product.packageSize || 'Package size not set'}</p>
+          )}
+          <p className="mt-1 text-xs text-slate-500">Available: {product.stock} {product.unit}</p>
+        </div>
+
+        <div className="flex items-center justify-center gap-4">
+          <button
+            type="button"
+            aria-label="Decrease quantity"
+            disabled={quantity <= 1}
+            onClick={() => setQuantity((value) => Math.max(1, value - 1))}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-300 text-slate-600 transition hover:border-amber-400 hover:text-amber-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-300"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <span className="min-w-12 text-center text-3xl font-black text-amber-600 dark:text-amber-400">{quantity}</span>
+          <button
+            type="button"
+            aria-label="Increase quantity"
+            disabled={quantity >= maxQuantity}
+            onClick={() => setQuantity((value) => Math.min(maxQuantity, value + 1))}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-300 text-slate-600 transition hover:border-amber-400 hover:text-amber-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-300"
+          >
+            <ArrowRight className="h-5 w-5" />
+          </button>
+        </div>
+
+        <button onClick={onConfirm} className="w-full rounded-2xl bg-amber-500 py-3 text-sm font-black text-white shadow-md hover:bg-amber-600">
+          Add {quantity} to cart
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InventoryItemModal({ theme, product, onClose }) {
+  const stockLedger = Array.isArray(product.stockLedger) ? product.stockLedger : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-xs animate-fade-in">
+      <div className={`max-h-[82vh] w-full rounded-t-[32px] p-4 pb-5 shadow-2xl ${
+        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
+      }`}>
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500">Inventory ledger</p>
+            <h3 className="truncate font-black text-lg">{product.brand ? `${product.brand} ` : ''}{product.name}</h3>
+          </div>
+          <button onClick={onClose} className="p-1 text-slate-400" aria-label="Close inventory ledger">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Current stock</p>
+            <p className="mt-1 text-2xl font-black text-amber-600">{product.stock} {product.unit}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Package size</p>
+            <p className="mt-1 text-sm font-black">{product.packageSize || 'Not set'}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 max-h-[48vh] space-y-2 overflow-y-auto pr-1">
+          {stockLedger.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700">
+              No inventory movements recorded yet.
+            </div>
+          ) : (
+            stockLedger.map((entry) => {
+              const isIncrease = Number(entry.quantity) > 0;
+              return (
+                <div key={entry.id} className={`rounded-2xl border p-3 ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${isIncrease ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                        {entry.type || (isIncrease ? 'Stock in' : 'Sale')}
+                      </span>
+                      <p className="mt-1 text-[10px] text-slate-400">{new Date(entry.date).toLocaleString()}</p>
+                    </div>
+                    <span className={`text-sm font-black ${isIncrease ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {isIncrease ? '+' : ''}{Number(entry.quantity || 0)} {product.unit}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] font-bold text-slate-500 dark:text-slate-300">{entry.description || 'Inventory movement'}</p>
+                  {entry.reference && <p className="text-[9px] text-slate-400">Ref: {entry.reference}</p>}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <button onClick={onClose} className="mt-3 w-full rounded-2xl border border-slate-300 py-3 text-sm font-black dark:border-slate-700">
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditProduct, onDeleteProduct, onRestock }) {
+  const [viewingProduct, setViewingProduct] = useState(null);
+
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
       <div className="flex items-center justify-between">
@@ -2079,6 +2276,9 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
                 )}
                 <div>
                   <h4 className="font-bold text-xs">{p.name}</h4>
+                  {(p.brand || p.packageSize) && (
+                    <p className="text-[10px] text-slate-400">{p.brand || 'No brand'}{p.packageSize ? ` • ${p.packageSize}` : ''}</p>
+                  )}
                   <div className="text-[10px] text-slate-400 space-x-2">
                     <span>Puhunan: ₱{p.costPrice.toFixed(2)}</span>
                     <span>•</span>
@@ -2101,6 +2301,13 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
                 </div>
 
                 <div className="flex items-center space-x-1 pl-1 border-l border-slate-200 dark:border-slate-800">
+                  <button
+                    onClick={() => setViewingProduct(p)}
+                    className="p-1 text-slate-400 hover:text-amber-500"
+                    aria-label={`View inventory for ${p.name}`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                  </button>
                   <button onClick={() => onEditProduct(p)} className="p-1 text-slate-400 hover:text-amber-500">
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
@@ -2113,6 +2320,14 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
           );
         })}
       </div>
+
+      {viewingProduct && (
+        <InventoryItemModal
+          theme={theme}
+          product={viewingProduct}
+          onClose={() => setViewingProduct(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2120,6 +2335,8 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
 function ProductFormModal({ theme, categories, product, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: product?.name || '',
+    brand: product?.brand || '',
+    packageSize: product?.packageSize || '',
     category: product?.category || categories[1] || 'Snacks',
     costPrice: product?.costPrice || '',
     retailPrice: product?.retailPrice || '',
@@ -2252,6 +2469,33 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
                 theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
               }`}
             />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="font-bold text-slate-500 block">Brand</label>
+              <input
+                type="text"
+                value={formData.brand}
+                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
+                placeholder="e.g. Coca-Cola"
+                className={`w-full p-2 rounded-xl border font-bold ${
+                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                }`}
+              />
+            </div>
+            <div>
+              <label className="font-bold text-slate-500 block">Package Size / Net Contents</label>
+              <input
+                type="text"
+                value={formData.packageSize}
+                onChange={(e) => setFormData({ ...formData, packageSize: e.target.value })}
+                placeholder="e.g. 500ml"
+                className={`w-full p-2 rounded-xl border font-bold ${
+                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                }`}
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
