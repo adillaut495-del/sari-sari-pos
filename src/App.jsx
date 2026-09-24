@@ -255,6 +255,37 @@ const DEFAULT_STORE_PROFILE = {
 };
 
 const CART_STORAGE_KEY = 'sari-sari-pos-cart';
+let scanAudioContext;
+
+const playScanSuccessSound = () => {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    scanAudioContext ||= new AudioContextClass();
+    if (scanAudioContext.state === 'suspended') {
+      scanAudioContext.resume();
+    }
+
+    const oscillator = scanAudioContext.createOscillator();
+    const gain = scanAudioContext.createGain();
+    const startTime = scanAudioContext.currentTime;
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, startTime);
+    oscillator.frequency.setValueAtTime(1320, startTime + 0.07);
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, startTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.16);
+
+    oscillator.connect(gain);
+    gain.connect(scanAudioContext.destination);
+    oscillator.start(startTime);
+    oscillator.stop(startTime + 0.16);
+  } catch (error) {
+    console.warn('Scan sound unavailable:', error);
+  }
+};
 
 const isImageSource = (value) => {
   if (typeof value !== 'string') return false;
@@ -606,6 +637,7 @@ export default function App() {
       return;
     }
 
+    playScanSuccessSound();
     addToCart(foundProduct, false);
   };
 
