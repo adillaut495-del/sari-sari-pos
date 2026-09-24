@@ -1805,8 +1805,8 @@ function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep
   const calculatedChange = Math.max(0, (parseFloat(tenderedCash) || 0) - totalAmount);
 
   return (
-    <div className="absolute inset-0 bg-black/70 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
-      <div className={`w-full h-[92%] rounded-t-[36px] p-4 pb-20 flex flex-col shadow-2xl ${
+    <div className="fixed inset-0 bg-black/70 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
+      <div className={`w-full max-h-[78vh] rounded-t-[32px] p-4 pb-4 flex flex-col shadow-2xl ${
         theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
       }`}>
 
