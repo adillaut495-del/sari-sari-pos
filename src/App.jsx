@@ -223,17 +223,6 @@ const INITIAL_CUSTOMERS = [
   { id: 'C-03', name: 'Mang Juan', phone: '09085551234', address: 'Street 4 Corner', balance: 0.00, notes: 'Pays in exact cash always', ledger: [] }
 ];
 
-const normalizeCustomer = (customer = {}) => ({
-  ...customer,
-  balance: Number(customer.balance) || 0,
-  ledger: Array.isArray(customer.ledger) ? customer.ledger.map((entry) => ({
-    ...entry,
-    amount: Number(entry.amount) || 0
-  })) : [],
-  // Pautang sub-ledger: each record is one payout with its own instalment schedule.
-  pautang: Array.isArray(customer.pautang) ? customer.pautang.map(normalizePautangRecord) : []
-});
-
 /** Normalises a single Pautang record and keeps its instalment maths self-consistent. */
 const normalizePautangRecord = (record = {}) => {
   const totalPrice = Number(record.totalPrice) || 0;
@@ -241,45 +230,76 @@ const normalizePautangRecord = (record = {}) => {
   const instalments = Array.isArray(record.instalments)
     ? record.instalments.map((entry) => ({
       ...entry,
-      amount: Number(entry.amount) || 0
+      amount: Number(entry.amount) || 0,
+      amountPaid: Number(entry.amountPaid) || 0,
+      paid: Boolean(entry.paid)
     }))
     : [];
+
+  const payments = Array.isArray(record.payments)
+    ? record.payments.map((entry) => ({ ...entry, amount: Number(entry.amount) || 0 }))
+    : [];
+
+  const balance = Math.max(0, Math.round((totalPrice - paid) * 100) / 100);
+  const isVoided = record.status === 'Voided';
 
   return {
     ...record,
     totalPrice,
     downPayment: Number(record.downPayment) || 0,
     paid,
-    balance: Math.max(0, Math.round((totalPrice - paid) * 100) / 100),
-    status: record.status || 'Active',
+    balance,
+    // A record is settled once nothing is left owing; never trust a stored flag.
+    // A voided record stays voided regardless of its zeroed balance.
+    status: isVoided ? 'Voided' : (balance <= 0 ? 'Redeemed' : 'Active'),
     items: Array.isArray(record.items) ? record.items : [],
-    instalments
+    instalments,
+    payments
   };
 };
 
-/** Total still owed across all active Pautang records of a customer. */
-const getPautangBalance = (customer) => {
-  const records = Array.isArray(customer?.pautang) ? customer.pautang : [];
-  return Math.round(records
-    .filter((record) => record.status !== 'Redeemed')
+/** Sums what is still owed across a set of Pautang records. */
+const sumPautangBalance = (records) => {
+  const list = Array.isArray(records) ? records : [];
+  return Math.round(list
+    .filter((record) => record.status === 'Active')
     .reduce((total, record) => total + (Number(record.balance) || 0), 0) * 100) / 100;
 };
 
 /**
- * Splits the remaining balance into equal instalments. `count` is validated by
- * the caller; this helper also protects against a zero/negative remainder.
+ * Splits a balance into equal instalments. Rounding drift is absorbed into the
+ * final instalment so the parts always sum back to the original amount.
  */
 const buildInstalmentSchedule = (balance, count) => {
   const total = Math.max(0, Number(balance) || 0);
-  const installments = Math.max(1, Math.floor(Number(count) || 1));
-  const perInstalment = Math.round((total / installments) * 100) / 100;
+  const count_ = Math.max(1, Math.floor(Number(count) || 1));
+  const perInstalment = Math.round((total / count_) * 100) / 100;
 
-  // Absorb rounding drift into the final instalment so the sum is always exact.
-  const schedule = Array.from({ length: installments }, () => perInstalment);
-  const drift = Math.round((total - perInstalment * installments) * 100) / 100;
+  const schedule = Array.from({ length: count_ }, () => perInstalment);
+  const drift = Math.round((total - perInstalment * count_) * 100) / 100;
   schedule[schedule.length - 1] = Math.round((schedule[schedule.length - 1] + drift) * 100) / 100;
 
   return schedule;
+};
+
+/** Rounds to 2 decimals to keep peso maths free of floating point drift. */
+const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+const normalizeCustomer = (customer = {}) => {
+  const pautang = Array.isArray(customer.pautang) ? customer.pautang.map(normalizePautangRecord) : [];
+
+  return {
+    ...customer,
+    balance: Number(customer.balance) || 0,
+    ledger: Array.isArray(customer.ledger) ? customer.ledger.map((entry) => ({
+      ...entry,
+      amount: Number(entry.amount) || 0
+    })) : [],
+    // Pautang is kept fully separate from Utang: its own records and its own
+    // balance, never folded into `balance` or `ledger`.
+    pautang,
+    pautangBalance: sumPautangBalance(pautang)
+  };
 };
 
 const DEFAULT_STORE_PROFILE = {
@@ -387,9 +407,19 @@ const registerIdsFrom = ({ products = [], customers = [], sales = [] } = {}) => 
 
   customers.forEach((customer) => {
     if (customer?.id) ID_REGISTRY.add(customer.id);
-    (Array.isArray(customer?.ledger) ? customer.ledger : []).forEach((entry) => {
+
+    const pushIds = (entry) => {
       if (entry?.id) ID_REGISTRY.add(entry.id);
-    });
+      (Array.isArray(entry?.payments) ? entry.payments : []).forEach((payment) => {
+        if (payment?.id) ID_REGISTRY.add(payment.id);
+      });
+      (Array.isArray(entry?.instalments) ? entry.instalments : []).forEach((instalment) => {
+        if (instalment?.id) ID_REGISTRY.add(instalment.id);
+      });
+    };
+
+    (Array.isArray(customer?.ledger) ? customer.ledger : []).forEach(pushIds);
+    (Array.isArray(customer?.pautang) ? customer.pautang : []).forEach(pushIds);
   });
 
   sales.forEach((sale) => {
@@ -711,6 +741,12 @@ export default function App() {
   const [paymentStep, setPaymentStep] = useState('method'); // 'method', 'receipt'
   const [lastCompletedOrder, setLastCompletedOrder] = useState(null);
 
+  // Pautang Instalment Payment Modal
+  const [isPautangPayOpen, setIsPautangPayOpen] = useState(false);
+  const [pautangTargetRecord, setPautangTargetRecord] = useState(null);
+  const [pautangPayAmount, setPautangPayAmount] = useState('');
+  const [pautangPayMethod, setPautangPayMethod] = useState('Cash');
+
   // Product CRUD Modals State
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null); // null = Add, Object = Edit
@@ -943,6 +979,16 @@ export default function App() {
       return;
     }
 
+    // A Pautang payout must be priced entirely at Pautang rates, so refuse to
+    // mix in regular/tingi items instead of silently mis-pricing the record.
+    if (paymentMethod === 'Pautang') {
+      const nonPautangItems = cart.filter((item) => !item.isPautang);
+      if (nonPautangItems.length > 0) {
+        showToast('Pautang checkout only accepts Pautang items. Separate the regular items first.', 'error');
+        return;
+      }
+    }
+
     const isCreditMethod = paymentMethod === 'Utang' || paymentMethod === 'Pautang';
     const customerObj = customers.find((c) => c.id === selectedUtangCustomer);
     const customerName = isCreditMethod ? (customerObj ? customerObj.name : 'Suki') : 'Walk-in Suki';
@@ -1036,12 +1082,68 @@ export default function App() {
       );
     }
 
-    // 3. Save to Sales History
+    // 3. If Pautang payment, record it in the customer's Pautang sub-ledger.
+    //    Deliberately does NOT touch `balance` / `ledger` - Pautang is tracked
+    //    and settled independently from Utang.
+    if (paymentMethod === 'Pautang' && selectedUtangCustomer) {
+      const downPayment = Math.min(Math.max(0, parseFloat(pautangDownPayment) || 0), totalAmount);
+      const financed = roundMoney(totalAmount - downPayment);
+      const requestedCount = Math.floor(Number(pautangInstalmentCount) || 1);
+      const instalmentCount = financed > 0 ? Math.min(Math.max(1, requestedCount), 100) : 0;
+      const schedule = buildInstalmentSchedule(financed, instalmentCount);
+
+      const payoutRecord = {
+        id: createUniqueId('PAUT'),
+        orderId: newOrder.id,
+        date: new Date().toISOString(),
+        description: `Pautang para sa ${customerName}`,
+        items: newOrder.items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          quantity: item.quantity,
+          price: Number(item.price) || 0
+        })),
+        totalPrice: roundMoney(totalAmount),
+        downPayment: roundMoney(downPayment),
+        paid: roundMoney(downPayment),
+        balance: financed,
+        status: financed > 0 ? 'Active' : 'Redeemed',
+        instalments: schedule.map((amount, index) => ({
+          id: createUniqueId('PAUTI'),
+          index: index + 1,
+          amount,
+          amountPaid: 0,
+          paid: false,
+          paidAt: null
+        })),
+        payments: downPayment > 0
+          ? [{
+            id: createUniqueId('PAUTP'),
+            amount: roundMoney(downPayment),
+            date: new Date().toISOString(),
+            method: 'Down Payment',
+            orderId: newOrder.id
+          }]
+          : []
+      };
+
+      setCustomers((prev) =>
+        prev.map((cust) => {
+          if (cust.id !== selectedUtangCustomer) return normalizeCustomer(cust);
+          return normalizeCustomer({
+            ...cust,
+            pautang: [payoutRecord, ...(Array.isArray(cust.pautang) ? cust.pautang : [])]
+          });
+        })
+      );
+    }
+
+    // 4. Save to Sales History
     setSalesHistory((prev) => [newOrder, ...prev]);
 
     setLastCompletedOrder(newOrder);
     setPaymentStep('receipt');
-    showToast('Transaction Successful!');
+    showToast(paymentMethod === 'Pautang' ? 'Pautang recorded!' : 'Transaction Successful!');
   };
 
   const handleStartNewSale = () => {
@@ -1112,12 +1214,138 @@ export default function App() {
       );
     }
 
+    // Reverse a Pautang payout if it was a Pautang order
+    if (order.paymentMethod === 'Pautang' && order.customerId) {
+      setCustomers((prev) =>
+        prev.map((cust) => {
+          if (cust.id !== order.customerId) return normalizeCustomer(cust);
+
+          const existing = Array.isArray(cust.pautang) ? cust.pautang : [];
+          const target = existing.find((record) => record.orderId === order.id);
+          if (!target) return normalizeCustomer(cust);
+
+          const nextRecord = {
+            ...target,
+            // Voiding cancels the payout; money already paid stays recorded.
+            totalPrice: 0,
+            paid: 0,
+            balance: 0,
+            status: 'Voided',
+            instalments: (Array.isArray(target.instalments) ? target.instalments : [])
+              .map((instalment) => ({ ...instalment, amount: 0 })),
+            voidedAt: new Date().toISOString()
+          };
+
+          return normalizeCustomer({
+            ...cust,
+            pautang: existing.map((record) => (record.id === target.id ? nextRecord : record))
+          });
+        })
+      );
+    }
+
     // Mark as Voided
     setSalesHistory((prev) =>
       prev.map((s) => (s.id === orderId ? { ...s, status: 'Voided' } : s))
     );
 
     showToast(`Order ${orderId} has been Voided & restocked`, 'warning');
+  };
+
+  // Pautang Instalment Payments
+  const handleOpenPautangPay = (customer, record) => {
+    setPautangTargetRecord({ customerId: customer.id, recordId: record.id });
+    setPautangPayAmount(String(record.balance));
+    setPautangPayMethod('Cash');
+    setIsPautangPayOpen(true);
+  };
+
+  const handlePautangPaySubmit = () => {
+    const amount = roundMoney(pautangPayAmount);
+
+    if (!pautangTargetRecord) {
+      showToast('Walang piniling pautang record.', 'error');
+      return;
+    }
+
+    if (amount <= 0) {
+      showToast('Maglagay ng wastong halaga.', 'error');
+      return;
+    }
+
+    // Validate against current state up front: the state updater below runs
+    // asynchronously, so its result cannot be relied on for the toast.
+    const targetCustomer = customers.find((cust) => cust.id === pautangTargetRecord.customerId);
+    const targetRecord = (Array.isArray(targetCustomer?.pautang) ? targetCustomer.pautang : [])
+      .find((record) => record.id === pautangTargetRecord.recordId);
+
+    if (!targetRecord || targetRecord.status !== 'Active') {
+      showToast('Hindi mabayaran ang payout na ito.', 'error');
+      return;
+    }
+
+    // Never accept more than what is still owed on this record.
+    const appliedAmount = Math.min(amount, Number(targetRecord.balance) || 0);
+
+    if (appliedAmount <= 0) {
+      showToast('Wala nang bayarin sa payout na ito.', 'error');
+      return;
+    }
+
+    setCustomers((prev) =>
+      prev.map((cust) => {
+        if (cust.id !== pautangTargetRecord.customerId) return normalizeCustomer(cust);
+
+        const records = Array.isArray(cust.pautang) ? cust.pautang : [];
+        const target = records.find((record) => record.id === pautangTargetRecord.recordId);
+        if (!target || target.status !== 'Active') return normalizeCustomer(cust);
+
+        // Consume the schedule oldest-first; a partial final payment is allowed
+        // so a customer can settle in whatever amount they can afford.
+        let remaining = Math.min(appliedAmount, Number(target.balance) || 0);
+        const instalments = (Array.isArray(target.instalments) ? target.instalments : []).map((instalment) => {
+          if (instalment.paid || remaining <= 0) return instalment;
+
+          const owed = roundMoney((Number(instalment.amount) || 0) - (Number(instalment.amountPaid) || 0));
+          const take = Math.min(owed, remaining);
+          remaining = roundMoney(remaining - take);
+
+          return {
+            ...instalment,
+            amountPaid: roundMoney((Number(instalment.amountPaid) || 0) + take),
+            paid: take >= owed,
+            paidAt: new Date().toISOString(),
+            paymentMethod: pautangPayMethod
+          };
+        });
+
+        const nextRecord = {
+          ...target,
+          paid: roundMoney((Number(target.paid) || 0) + appliedAmount),
+          instalments,
+          payments: [
+            {
+              id: createUniqueId('PAUTP'),
+              amount: appliedAmount,
+              date: new Date().toISOString(),
+              method: pautangPayMethod,
+              orderId: target.orderId
+            },
+            ...(Array.isArray(target.payments) ? target.payments : [])
+          ]
+        };
+
+        return normalizeCustomer({
+          ...cust,
+          pautang: records.map((record) => (record.id === target.id ? nextRecord : record))
+        });
+      })
+    );
+
+    showToast(`Pautang instalment na ₱${appliedAmount.toFixed(2)}`);
+    setIsPautangPayOpen(false);
+    setPautangTargetRecord(null);
+    setPautangPayAmount('');
   };
 
   // Product CRUD Handlers
@@ -1459,6 +1687,7 @@ export default function App() {
               theme={theme}
               customers={customers}
               onAddCustomer={() => setIsCustomerModalOpen(true)}
+              onPautangPay={handleOpenPautangPay}
               onPabayad={(c) => {
                 setSelectedCustomerForPayment(c);
                 setIsPabayadModalOpen(true);
@@ -1555,6 +1784,10 @@ export default function App() {
             customers={customers}
             selectedUtangCustomer={selectedUtangCustomer}
             setSelectedUtangCustomer={setSelectedUtangCustomer}
+            pautangDownPayment={pautangDownPayment}
+            setPautangDownPayment={setPautangDownPayment}
+            pautangInstalmentCount={pautangInstalmentCount}
+            setPautangInstalmentCount={setPautangInstalmentCount}
             totalAmount={lastCompletedOrder ? lastCompletedOrder.totalAmount : totalAmount}
             order={lastCompletedOrder}
             handleFinalizeTransaction={handleFinalizeTransaction}
@@ -1622,6 +1855,32 @@ export default function App() {
             onClose={() => setIsPabayadModalOpen(false)}
           />
         )}
+
+        {/* Pautang Instalment Payment Modal */}
+        {isPautangPayOpen && pautangTargetRecord && (() => {
+          const customer = customers.find((cust) => cust.id === pautangTargetRecord.customerId);
+          const record = (Array.isArray(customer?.pautang) ? customer.pautang : [])
+            .find((entry) => entry.id === pautangTargetRecord.recordId);
+
+          if (!customer || !record) return null;
+
+          return (
+            <PautangInstalmentModal
+              theme={theme}
+              customer={customer}
+              record={record}
+              amount={pautangPayAmount}
+              setAmount={setPautangPayAmount}
+              method={pautangPayMethod}
+              setMethod={setPautangPayMethod}
+              onConfirm={handlePautangPaySubmit}
+              onClose={() => {
+                setIsPautangPayOpen(false);
+                setPautangTargetRecord(null);
+              }}
+            />
+          );
+        })()}
 
         {/* Toast Notification Banner */}
         {toast && (
@@ -2136,7 +2395,7 @@ function CartDrawer({ theme, cart, updateCartQty, removeFromCart, discountPercen
   );
 }
 
-function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep, paymentMethod, setPaymentMethod, tenderedCash, setTenderedCash, customers, selectedUtangCustomer, setSelectedUtangCustomer, totalAmount, order, handleFinalizeTransaction, handleStartNewSale, onClose, showToast }) {
+function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep, paymentMethod, setPaymentMethod, tenderedCash, setTenderedCash, customers, selectedUtangCustomer, setSelectedUtangCustomer, pautangDownPayment, setPautangDownPayment, pautangInstalmentCount, setPautangInstalmentCount, totalAmount, order, handleFinalizeTransaction, handleStartNewSale, onClose, showToast }) {
   const quickCashOptions = [totalAmount, 20, 50, 100, 200, 500, 1000];
   const calculatedChange = Math.max(0, (parseFloat(tenderedCash) || 0) - totalAmount);
 
@@ -2181,7 +2440,8 @@ function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep
                 {[
                   { id: 'Cash', label: 'Cash (Barya)', icon: DollarSign },
                   { id: 'GCash', label: 'GCash QR', icon: Smartphone },
-                  { id: 'Utang', label: 'Utang / Credit', icon: BookOpen }
+                  { id: 'Utang', label: 'Utang / Credit', icon: BookOpen },
+                  { id: 'Pautang', label: 'Pautang', icon: Landmark }
                 ].map((m) => {
                   const Icon = m.icon;
                   const isSel = paymentMethod === m.id;
@@ -2272,6 +2532,82 @@ function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+
+              {/* Pautang Ledger Select + Instalment Terms */}
+              {paymentMethod === 'Pautang' && (
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-2.5 text-[10px] font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300">
+                    Pautang ay hiwalay sa Utang. May sariling balanse at sariling installment.
+                  </div>
+
+                  <label className="text-xs font-bold text-slate-500">Pumili ng Suki / Kapitbahay</label>
+                  <select
+                    value={selectedUtangCustomer}
+                    onChange={(e) => setSelectedUtangCustomer(e.target.value)}
+                    className={`w-full p-2.5 rounded-2xl font-bold text-xs border outline-none ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <option value="">-- Pumili sa Listahan --</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} (Pautang: ₱{(Number(c.pautangBalance) || 0).toFixed(2)})
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div>
+                      <label className="text-xs font-bold text-slate-500">Down Payment (₱)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={totalAmount}
+                        placeholder="0.00"
+                        value={pautangDownPayment}
+                        onChange={(e) => setPautangDownPayment(e.target.value)}
+                        className={`mt-1 w-full p-2.5 rounded-2xl font-bold text-sm border outline-none ${
+                          theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                        }`}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-500">Bilhan ng Tingan</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="1"
+                        value={pautangInstalmentCount}
+                        onChange={(e) => setPautangInstalmentCount(e.target.value)}
+                        className={`mt-1 w-full p-2.5 rounded-2xl font-bold text-sm border outline-none ${
+                          theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const down = Math.min(Math.max(0, parseFloat(pautangDownPayment) || 0), totalAmount);
+                    const financed = Math.round((totalAmount - down) * 100) / 100;
+                    const count = Math.min(Math.max(1, Math.floor(Number(pautangInstalmentCount) || 1)), 100);
+                    const per = financed > 0 ? Math.round((financed / count) * 100) / 100 : 0;
+
+                    return (
+                      <div className="rounded-2xl bg-indigo-500/10 border border-indigo-500/20 p-2.5 text-[10px] space-y-0.5 text-indigo-700 dark:text-indigo-300">
+                        <div className="flex justify-between"><span>Kabuuang Presyo</span><span className="font-black">₱{totalAmount.toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span>Down Payment</span><span className="font-black">₱{down.toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span>Matitirang Bayarin</span><span className="font-black">₱{financed.toFixed(2)}</span></div>
+                        <div className="flex justify-between border-t border-indigo-500/20 pt-1">
+                          <span>{count}x Tingan</span>
+                          <span className="font-black">₱{per.toFixed(2)} kada</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -2568,6 +2904,8 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     unit: product?.unit || 'pcs',
     barcode: product?.barcode || '',
     hasTingi: product?.hasTingi || false,
+    hasPautang: product?.hasPautang || false,
+    pautangPrice: product?.pautangPrice || '',
     tingiPrice: product?.tingiPrice || '',
     tingiRatio: product?.tingiRatio || 1
   });
@@ -2651,7 +2989,9 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
       stock: parseFloat(formData.stock) || 0,
       reorderLevel: parseFloat(formData.reorderLevel) || 5,
       tingiPrice: parseFloat(formData.tingiPrice) || 0,
-      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1
+      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1,
+      hasPautang: Boolean(formData.hasPautang),
+      pautangPrice: parseFloat(formData.pautangPrice) || 0
     });
   };
 
@@ -2775,6 +3115,39 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
             )}
           </div>
 
+          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+            <label className="flex items-center space-x-2 font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(formData.hasPautang)}
+                onChange={(e) => setFormData({ ...formData, hasPautang: e.target.checked })}
+              />
+              <span>May Pautang Price?</span>
+            </label>
+
+            {formData.hasPautang && (
+              <div className="mt-2 space-y-2">
+                <div>
+                  <label className="font-bold text-slate-500 block">Presyo ng Pautang (₱)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formData.pautangPrice}
+                    onChange={(e) => setFormData({ ...formData, pautangPrice: e.target.value })}
+                    placeholder="Iba sa regular na presyo"
+                    className={`w-full p-2 rounded-xl border font-bold ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Regular: ₱{parseFloat(formData.retailPrice || 0).toFixed(2) || '0.00'} • Pautang: ₱{parseFloat(formData.pautangPrice || 0).toFixed(2) || '0.00'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
         </div>
 
         {/* Pinned footer - Save button is always reachable */}
@@ -2878,10 +3251,78 @@ function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPr
   );
 }
 
-function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
+/** One Pautang payout row inside the sub-ledger, with progress and a pay action. */
+function PautangRecordCard({ theme, customer, record, onPay }) {
+  const instalments = Array.isArray(record.instalments) ? record.instalments : [];
+  const paidCount = instalments.filter((instalment) => instalment.paid).length;
+  const totalPrice = Number(record.totalPrice) || 0;
+  const paid = Number(record.paid) || 0;
+  const progress = Math.min(100, (paid / Math.max(1, totalPrice)) * 100);
+
+  const statusTone = record.status === 'Active'
+    ? 'bg-indigo-100 text-indigo-700'
+    : record.status === 'Redeemed'
+      ? 'bg-emerald-100 text-emerald-700'
+      : 'bg-slate-200 text-slate-600';
+
+  return (
+    <div className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${statusTone}`}>
+            {record.status}
+          </span>
+          <p className="mt-1 text-[10px] font-bold text-slate-500 dark:text-slate-300">
+            {new Date(record.date).toLocaleDateString()} • {record.id}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <span className="block text-sm font-black text-indigo-600">₱{(Number(record.balance) || 0).toFixed(2)}</span>
+          <span className="text-[9px] text-slate-400">ng ₱{totalPrice.toFixed(2)}</span>
+        </div>
+      </div>
+
+      {Array.isArray(record.items) && record.items.length > 0 && (
+        <ul className="mt-2 space-y-0.5 text-[10px] text-slate-600 dark:text-slate-300">
+          {record.items.map((item, index) => (
+            <li key={`${record.id}-item-${index}`} className="flex justify-between gap-2">
+              <span className="truncate">{item.name} x{item.quantity}</span>
+              <span className="shrink-0 font-bold">₱{(Number(item.price) || 0).toFixed(2)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {instalments.length > 0 && (
+        <div className="mt-2">
+          <div className="flex justify-between text-[9px] text-slate-400">
+            <span>Tingan {paidCount}/{instalments.length}</span>
+            <span>Nabayaran ₱{paid.toFixed(2)}</span>
+          </div>
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+            <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+
+      {record.status === 'Active' && (
+        <button
+          onClick={() => onPay(customer, record)}
+          className="mt-2 w-full rounded-xl bg-indigo-600 py-2 text-xs font-black text-white"
+        >
+          Magbayad ng Tingan
+        </button>
+      )}
+    </div>
+  );
+}
+
+function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautangPay }) {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [sheetTab, setSheetTab] = useState('utang');
 
   const totalOutstandingUtang = customers.reduce((a, b) => a + (Number(b.balance) || 0), 0);
+  const totalOutstandingPautang = customers.reduce((a, b) => a + (Number(b.pautangBalance) || 0), 0);
 
   const allLedgerEntries = customers
     .flatMap((customer) =>
@@ -2899,12 +3340,25 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
     ? [...(Array.isArray(selectedCustomer.ledger) ? selectedCustomer.ledger : [])].sort((a, b) => new Date(b.date) - new Date(a.date))
     : [];
 
+  // Pautang lives in its own sub-ledger, kept apart from the Utang entries.
+  const selectedPautangRecords = selectedCustomer
+    ? [...(Array.isArray(selectedCustomer.pautang) ? selectedCustomer.pautang : [])]
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+    : [];
+
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
-      <div className="p-4 rounded-2xl bg-gradient-to-r from-red-600 to-amber-600 text-white space-y-1 shadow-md">
-        <span className="text-xs font-bold opacity-90">Kabuuan ng Pautang</span>
-        <div className="text-2xl font-black">₱{totalOutstandingUtang.toFixed(2)}</div>
-        <p className="text-[10px] opacity-80">{customers.filter((c) => (Number(c.balance) || 0) > 0).length} Suki ang may balanseng utang</p>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-2xl bg-gradient-to-br from-red-600 to-amber-600 p-3 text-white shadow-md">
+          <span className="text-[10px] font-bold uppercase tracking-wider opacity-90">Kabuuan ng Utang</span>
+          <div className="text-xl font-black">₱{totalOutstandingUtang.toFixed(2)}</div>
+          <p className="text-[10px] opacity-80">{customers.filter((c) => (Number(c.balance) || 0) > 0).length} Suki</p>
+        </div>
+        <div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 p-3 text-white shadow-md">
+          <span className="text-[10px] font-bold uppercase tracking-wider opacity-90">Kabuuan ng Pautang</span>
+          <div className="text-xl font-black">₱{totalOutstandingPautang.toFixed(2)}</div>
+          <p className="text-[10px] opacity-80">{customers.filter((c) => (Number(c.pautangBalance) || 0) > 0).length} Suki</p>
+        </div>
       </div>
 
       <div className="flex items-center justify-between">
@@ -2926,6 +3380,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
         ) : (
           customers.map((customer) => {
             const balance = Number(customer.balance) || 0;
+            const pautangBalance = Number(customer.pautangBalance) || 0;
             const ledger = Array.isArray(customer.ledger) ? customer.ledger : [];
             const latestEntry = [...ledger].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
 
@@ -2938,11 +3393,23 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-black text-sm">{customer.name}</h3>
-                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${balance > 0 ? 'bg-red-100 text-red-700' : balance < 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                        {balance > 0 ? 'May Utang' : balance < 0 ? 'May Pondo' : 'Lutong Buwis'}
-                      </span>
+                      {balance > 0 && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                          May Utang
+                        </span>
+                      )}
+                      {pautangBalance > 0 && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                          May Pautang
+                        </span>
+                      )}
+                      {balance <= 0 && pautangBalance <= 0 && (
+                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                          Lutong Buwis
+                        </span>
+                      )}
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">{customer.phone || 'Walang numero'}</p>
                     {latestEntry && (
@@ -2952,10 +3419,13 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
                     )}
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <span className={`block text-base font-black ${balance > 0 ? 'text-red-500' : balance < 0 ? 'text-amber-600' : 'text-emerald-500'}`}>
                       ₱{balance.toFixed(2)}
                     </span>
+                    {pautangBalance > 0 && (
+                      <span className="block text-[11px] font-black text-indigo-600">₱{pautangBalance.toFixed(2)}</span>
+                    )}
                     <span className="text-[9px] text-slate-400">{ledger.length} record</span>
                   </div>
                 </div>
@@ -2978,12 +3448,60 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
               </button>
             </div>
 
-            <div className="mt-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 p-3 text-center">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-600">Kasalukuyang Balans</p>
-              <div className="mt-1 text-2xl font-black text-amber-600">₱{(Number(selectedCustomer.balance) || 0).toFixed(2)}</div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-300">{selectedCustomer.phone || 'Walang numero'} • {selectedCustomerEntries.length} entry</p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-2.5 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-amber-600">Utang</p>
+                <div className="mt-0.5 text-lg font-black text-amber-600">₱{(Number(selectedCustomer.balance) || 0).toFixed(2)}</div>
+                <p className="text-[9px] text-slate-500 dark:text-slate-300">{selectedCustomerEntries.length} entry</p>
+              </div>
+              <div className="rounded-2xl bg-indigo-500/10 border border-indigo-500/20 p-2.5 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-indigo-600">Pautang</p>
+                <div className="mt-0.5 text-lg font-black text-indigo-600">₱{(Number(selectedCustomer.pautangBalance) || 0).toFixed(2)}</div>
+                <p className="text-[9px] text-slate-500 dark:text-slate-300">{selectedPautangRecords.length} payout</p>
+              </div>
             </div>
 
+            <div className="mt-3 flex shrink-0 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+              {[
+                { id: 'utang', label: `Utang (${selectedCustomerEntries.length})` },
+                { id: 'pautang', label: `Pautang (${selectedPautangRecords.length})` }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSheetTab(tab.id)}
+                  className={`flex-1 rounded-lg py-1.5 text-[11px] font-black transition ${
+                    sheetTab === tab.id
+                      ? tab.id === 'pautang'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'bg-amber-500 text-white shadow'
+                      : 'text-slate-500'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {sheetTab === 'pautang' ? (
+              <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
+                {selectedPautangRecords.length === 0 ? (
+                  <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
+                    Walang pautang record para sa {selectedCustomer.name}.
+                  </div>
+                ) : (
+                  selectedPautangRecords.map((record) => (
+                    <PautangRecordCard
+                      key={record.id}
+                      theme={theme}
+                      customer={selectedCustomer}
+                      record={record}
+                      onPay={onPautangPay}
+                    />
+                  ))
+                )}
+              </div>
+            ) : (
             <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
               {selectedCustomerEntries.length === 0 ? (
                 <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
@@ -3029,17 +3547,36 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
                 })
               )}
             </div>
+            )}
 
             <div className="mt-3 flex gap-2">
-              <button
-                onClick={() => {
-                  onPabayad(selectedCustomer);
-                  setSelectedCustomer(null);
-                }}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-black text-sm"
-              >
-                Magbayad
-              </button>
+              {sheetTab === 'utang' ? (
+                <button
+                  onClick={() => {
+                    onPabayad(selectedCustomer);
+                    setSelectedCustomer(null);
+                  }}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-black text-sm"
+                >
+                  Magbayad ng Utang
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    const nextRecord = selectedPautangRecords.find((record) => record.status === 'Active');
+                    if (!nextRecord) return;
+                    onPautangPay(selectedCustomer, nextRecord);
+                  }}
+                  disabled={!selectedPautangRecords.some((record) => record.status === 'Active')}
+                  className={`flex-1 py-3 rounded-2xl font-black text-sm ${
+                    selectedPautangRecords.some((record) => record.status === 'Active')
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  Magbayad ng Tingan
+                </button>
+              )}
               <button
                 onClick={() => setSelectedCustomer(null)}
                 className="flex-1 border border-slate-300 dark:border-slate-700 py-3 rounded-2xl font-black text-sm"
@@ -3245,6 +3782,165 @@ function CustomerFormModal({ theme, onSave, onClose }) {
           </button>
         </div>
       </form>
+    </ModalShell>
+  );
+}
+
+/**
+ * Records a Pautang instalment (tingan) against one payout. This is separate
+ * from PabayadModal, which only ever settles a customer's Utang balance.
+ */
+function PautangInstalmentModal({ theme, customer, record, amount, setAmount, method, setMethod, onConfirm, onClose }) {
+  const balance = Number(record.balance) || 0;
+  const parsed = Number(amount) || 0;
+  const overpay = parsed > balance;
+
+  // One-tap shortcuts sized to what is genuinely still owed.
+  const quickAmounts = Array.from(new Set([
+    balance,
+    Math.round(balance / 2),
+    Math.min(balance, 50),
+    Math.min(balance, 100),
+    Math.min(balance, 200)
+  ].filter((value) => Number.isFinite(value) && value > 0))).sort((a, b) => b - a);
+
+  return (
+    <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-sm">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-500">Pautang Tingan</p>
+          <h3 className="mt-1 truncate font-black text-sm">{customer.name}</h3>
+          <p className="mt-0.5 text-[10px] text-slate-400">
+            Ref: {record.id} • {new Date(record.date).toLocaleDateString()}
+          </p>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl bg-slate-100 p-2 dark:bg-slate-800">
+              <p className="text-[9px] font-bold uppercase text-slate-500">Presyo</p>
+              <p className="mt-0.5 text-sm font-black">₱{(Number(record.totalPrice) || 0).toFixed(2)}</p>
+            </div>
+            <div className="rounded-xl bg-emerald-500/10 p-2">
+              <p className="text-[9px] font-bold uppercase text-emerald-600">Nabayaran</p>
+              <p className="mt-0.5 text-sm font-black text-emerald-600">₱{(Number(record.paid) || 0).toFixed(2)}</p>
+            </div>
+            <div className="rounded-xl bg-indigo-500/10 p-2">
+              <p className="text-[9px] font-bold uppercase text-indigo-600">Natitira</p>
+              <p className="mt-0.5 text-sm font-black text-indigo-600">₱{balance.toFixed(2)}</p>
+            </div>
+          </div>
+
+          {Array.isArray(record.items) && record.items.length > 0 && (
+            <div className="rounded-xl border border-slate-200 p-2 dark:border-slate-700">
+              <p className="text-[9px] font-bold uppercase text-slate-400">Mga Paninda</p>
+              <ul className="mt-1 space-y-0.5 text-[10px] text-slate-600 dark:text-slate-300">
+                {record.items.map((item, index) => (
+                  <li key={`${record.id}-item-${index}`} className="flex justify-between gap-2">
+                    <span className="truncate">{item.name} x{item.quantity}</span>
+                    <span className="shrink-0 font-bold">₱{(Number(item.price) || 0).toFixed(2)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {Array.isArray(record.instalments) && record.instalments.length > 0 && (
+            <div>
+              <p className="mb-1 text-[9px] font-bold uppercase text-slate-400">
+                Schedule ({record.instalments.filter((i) => i.paid).length}/{record.instalments.length} paid)
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {record.instalments.map((instalment) => {
+                  const partial = !instalment.paid && (Number(instalment.amountPaid) || 0) > 0;
+                  const tone = instalment.paid
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : partial
+                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
+
+                  return (
+                    <span key={instalment.id} className={`rounded-lg px-1.5 py-1 text-[9px] font-black ${tone}`}>
+                      #{instalment.index} ₱{(Number(instalment.amount) || 0).toFixed(2)}
+                      {partial ? ` (${(Number(instalment.amountPaid) || 0).toFixed(2)})` : ''}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-bold text-slate-500">Halagang Bayad (₱)</label>
+            <div className="relative mt-1">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400">₱</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+                className={`w-full rounded-2xl py-2.5 pl-8 pr-3 text-lg font-black outline-none ${
+                  overpay || parsed <= 0 ? 'border-2 border-red-400' : 'border-2 border-indigo-400'
+                } ${theme === 'dark' ? 'bg-slate-800' : 'bg-white'}`}
+              />
+            </div>
+            {overpay && (
+              <p className="mt-1 text-[10px] font-bold text-red-500">
+                Mas malaki sa natitirang ₱{balance.toFixed(2)} — iaadjust sa bayaran.
+              </p>
+            )}
+          </div>
+
+          {quickAmounts.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {quickAmounts.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setAmount(value.toFixed(2))}
+                  className="rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-black text-indigo-700 transition hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300"
+                >
+                  ₱{value.toFixed(2)}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-bold text-slate-500">Paraan ng Bayad</label>
+            <div className="mt-1 grid grid-cols-3 gap-2">
+              {['Cash', 'GCash', 'Utang'].map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setMethod(option)}
+                  className={`rounded-xl border py-1.5 text-[10px] font-black transition ${
+                    method === option
+                      ? 'border-indigo-500 bg-indigo-500 text-white'
+                      : theme === 'dark'
+                        ? 'border-slate-700 bg-slate-800 text-slate-300'
+                        : 'border-slate-200 bg-white text-slate-600'
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+          <div className="flex space-x-2">
+            <button onClick={onClose} className="flex-1 rounded-xl border border-slate-300 py-2 text-xs font-bold dark:border-slate-600">
+              Kanselahin
+            </button>
+            <button onClick={onConfirm} className="flex-1 rounded-xl bg-indigo-600 py-2 text-xs font-bold text-white shadow-md">
+              Itala ang Tingan
+            </button>
+          </div>
+        </div>
+      </div>
     </ModalShell>
   );
 }
