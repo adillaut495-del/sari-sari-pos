@@ -759,6 +759,12 @@ export default function App() {
   const [restockQty, setRestockQty] = useState('');
   const [restockCostPrice, setRestockCostPrice] = useState('');
   const [restockRetailPrice, setRestockRetailPrice] = useState('');
+  // Special prices are edited here in Stock In rather than in the product form.
+  const [restockHasTingi, setRestockHasTingi] = useState(false);
+  const [restockTingiPrice, setRestockTingiPrice] = useState('');
+  const [restockTingiRatio, setRestockTingiRatio] = useState(1);
+  const [restockHasPautang, setRestockHasPautang] = useState(false);
+  const [restockPautangPrice, setRestockPautangPrice] = useState('');
 
   // Utang Customer CRUD Modals State
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
@@ -1360,7 +1366,21 @@ export default function App() {
 
     if (editingProduct) {
       setProducts((prev) =>
-        prev.map((p) => (p.id === editingProduct.id ? normalizeProduct({ ...p, ...normalizedProduct }) : p))
+        prev.map((p) => {
+          if (p.id !== editingProduct.id) return p;
+
+          // Tingi / Pautang pricing is owned by the Stock In form. Carry the
+          // existing values over so editing a product never wipes them.
+          return normalizeProduct({
+            ...p,
+            ...normalizedProduct,
+            hasTingi: p.hasTingi,
+            tingiPrice: p.tingiPrice,
+            tingiRatio: p.tingiRatio,
+            hasPautang: p.hasPautang,
+            pautangPrice: p.pautangPrice
+          });
+        })
       );
       showToast(`Updated product ${normalizedProduct.name}`);
     } else {
@@ -1380,6 +1400,20 @@ export default function App() {
     }
   };
 
+  const handleOpenRestock = (product) => {
+    setRestockProduct(product);
+    setRestockQty('');
+    setRestockCostPrice('');
+    setRestockRetailPrice('');
+    // Seed the special-price fields from the product's current values.
+    setRestockHasTingi(Boolean(product.hasTingi));
+    setRestockTingiPrice(product.tingiPrice ? String(product.tingiPrice) : '');
+    setRestockTingiRatio(Number(product.tingiRatio) > 0 ? Number(product.tingiRatio) : 1);
+    setRestockHasPautang(Boolean(product.hasPautang));
+    setRestockPautangPrice(product.pautangPrice ? String(product.pautangPrice) : '');
+    setIsRestockModalOpen(true);
+  };
+
   const handleRestockSubmit = () => {
     const qty = parseFloat(restockQty);
     if (isNaN(qty) || qty <= 0 || !restockProduct) {
@@ -1389,8 +1423,9 @@ export default function App() {
 
     const nextCost = parseFloat(restockCostPrice);
     const nextRetail = parseFloat(restockRetailPrice);
-    const nextTingiPrice = parseFloat(restockProduct.tingiPrice || 0);
-    const nextTingiRatio = Number(restockProduct.tingiRatio) || 1;
+    const nextTingiPrice = parseFloat(restockTingiPrice);
+    const nextTingiRatio = Number(restockTingiRatio) || 1;
+    const nextPautangPrice = parseFloat(restockPautangPrice);
 
     setProducts((prev) =>
       prev.map((p) => {
@@ -1401,8 +1436,17 @@ export default function App() {
           stock: (Number(p.stock) || 0) + qty,
           costPrice: Number.isNaN(nextCost) ? Number(p.costPrice) || 0 : nextCost,
           retailPrice: Number.isNaN(nextRetail) ? Number(p.retailPrice) || 0 : nextRetail,
-          tingiPrice: Number.isNaN(nextTingiPrice) ? Number(p.tingiPrice) || 0 : nextTingiPrice,
+          // Tingi pricing is configured here in Stock In.
+          hasTingi: restockHasTingi,
+          tingiPrice: restockHasTingi
+            ? (Number.isNaN(nextTingiPrice) ? Number(p.tingiPrice) || 0 : nextTingiPrice)
+            : 0,
           tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1,
+          // Pautang pricing is configured here in Stock In.
+          hasPautang: restockHasPautang,
+          pautangPrice: restockHasPautang
+            ? (Number.isNaN(nextPautangPrice) ? Number(p.pautangPrice) || 0 : nextPautangPrice)
+            : 0,
           stockLedger: [
             {
               id: createUniqueId('STK'),
@@ -1675,10 +1719,7 @@ export default function App() {
                 setIsProductModalOpen(true);
               }}
               onDeleteProduct={handleDeleteProduct}
-              onRestock={(p) => {
-                setRestockProduct(p);
-                setIsRestockModalOpen(true);
-              }}
+              onRestock={handleOpenRestock}
             />
           )}
 
@@ -1830,6 +1871,16 @@ export default function App() {
             setRestockCostPrice={setRestockCostPrice}
             restockRetailPrice={restockRetailPrice}
             setRestockRetailPrice={setRestockRetailPrice}
+            restockHasTingi={restockHasTingi}
+            setRestockHasTingi={setRestockHasTingi}
+            restockTingiPrice={restockTingiPrice}
+            setRestockTingiPrice={setRestockTingiPrice}
+            restockTingiRatio={restockTingiRatio}
+            setRestockTingiRatio={setRestockTingiRatio}
+            restockHasPautang={restockHasPautang}
+            setRestockHasPautang={setRestockHasPautang}
+            restockPautangPrice={restockPautangPrice}
+            setRestockPautangPrice={setRestockPautangPrice}
             onConfirm={handleRestockSubmit}
             onClose={() => setIsRestockModalOpen(false)}
           />
@@ -2902,12 +2953,8 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     stock: product?.stock || '',
     reorderLevel: product?.reorderLevel || 5,
     unit: product?.unit || 'pcs',
-    barcode: product?.barcode || '',
-    hasTingi: product?.hasTingi || false,
-    hasPautang: product?.hasPautang || false,
-    pautangPrice: product?.pautangPrice || '',
-    tingiPrice: product?.tingiPrice || '',
-    tingiRatio: product?.tingiRatio || 1
+    barcode: product?.barcode || ''
+    // Tingi / Pautang pricing is not part of this form - it lives in Stock In.
   });
   const [cameraError, setCameraError] = useState('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -2987,11 +3034,9 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
       costPrice: parseFloat(formData.costPrice) || 0,
       retailPrice: parseFloat(formData.retailPrice) || 0,
       stock: parseFloat(formData.stock) || 0,
-      reorderLevel: parseFloat(formData.reorderLevel) || 5,
-      tingiPrice: parseFloat(formData.tingiPrice) || 0,
-      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1,
-      hasPautang: Boolean(formData.hasPautang),
-      pautangPrice: parseFloat(formData.pautangPrice) || 0
+      reorderLevel: parseFloat(formData.reorderLevel) || 5
+      // Tingi / Pautang pricing is intentionally NOT sent from here: it is
+      // owned by the Stock In form and must not be reset on every edit.
     });
   };
 
@@ -3075,77 +3120,9 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
           </div>
 
           <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-            <label className="flex items-center space-x-2 font-bold cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formData.hasTingi}
-                onChange={(e) => setFormData({ ...formData, hasTingi: e.target.checked })}
-              />
-              <span>May Benta na Tingi / Sachet?</span>
-            </label>
-
-            {formData.hasTingi && (
-              <div className="mt-2 space-y-2">
-                <div>
-                  <label className="font-bold text-slate-500 block">Presyo ng Tingi (₱)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={formData.tingiPrice}
-                    onChange={(e) => setFormData({ ...formData, tingiPrice: e.target.value })}
-                    className={`w-full p-2 rounded-xl border font-bold ${
-                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-500 block">Tingi effect sa stock (1 pack = X sachets)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={formData.tingiRatio}
-                    onChange={(e) => setFormData({ ...formData, tingiRatio: e.target.value })}
-                    className={`w-full p-2 rounded-xl border font-bold ${
-                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-            <label className="flex items-center space-x-2 font-bold cursor-pointer">
-              <input
-                type="checkbox"
-                checked={Boolean(formData.hasPautang)}
-                onChange={(e) => setFormData({ ...formData, hasPautang: e.target.checked })}
-              />
-              <span>May Pautang Price?</span>
-            </label>
-
-            {formData.hasPautang && (
-              <div className="mt-2 space-y-2">
-                <div>
-                  <label className="font-bold text-slate-500 block">Presyo ng Pautang (₱)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.pautangPrice}
-                    onChange={(e) => setFormData({ ...formData, pautangPrice: e.target.value })}
-                    placeholder="Iba sa regular na presyo"
-                    className={`w-full p-2 rounded-xl border font-bold ${
-                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  />
-                  <p className="mt-1 text-[10px] text-slate-400">
-                    Regular: ₱{parseFloat(formData.retailPrice || 0).toFixed(2) || '0.00'} • Pautang: ₱{parseFloat(formData.pautangPrice || 0).toFixed(2) || '0.00'}
-                  </p>
-                </div>
-              </div>
-            )}
+            <p className="text-[10px] font-bold text-slate-400">
+              💡 Ang presyo ng Tingi at Pautang ay itinatago sa <span className="font-black">Stock In</span>.
+            </p>
           </div>
 
         </div>
@@ -3164,7 +3141,7 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
   );
 }
 
-function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, onConfirm, onClose }) {
+function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, restockHasTingi, setRestockHasTingi, restockTingiPrice, setRestockTingiPrice, restockTingiRatio, setRestockTingiRatio, restockHasPautang, setRestockHasPautang, restockPautangPrice, setRestockPautangPrice, onConfirm, onClose }) {
   return (
     <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
       <div className="flex min-h-0 flex-1 flex-col">
@@ -3203,37 +3180,77 @@ function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPr
               theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
             }`}
           />
-          {product.hasTingi && (
-            <>
+          <div className="pt-1">
+            <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
               <input
-                type="number"
-                step="0.01"
-                placeholder="Bagong Presyo ng Tingi (₱)"
-                value={product.tingiPrice || ''}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  product.tingiPrice = Number.isNaN(next) ? 0 : next;
-                }}
-                className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
+                type="checkbox"
+                checked={restockHasTingi}
+                onChange={(e) => setRestockHasTingi(e.target.checked)}
               />
+              <span>May Benta na Tingi / Sachet?</span>
+            </label>
+
+            {restockHasTingi && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Tingi (₱)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={restockTingiPrice}
+                    onChange={(e) => setRestockTingiPrice(e.target.value)}
+                    className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500">1 pack = x sachets</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="1"
+                    value={restockTingiRatio}
+                    onChange={(e) => setRestockTingiRatio(e.target.value)}
+                    className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-1">
+            <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
               <input
-                type="number"
-                min="1"
-                step="1"
-                placeholder="1 pack = x sachets / units"
-                value={product.tingiRatio || 1}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  product.tingiRatio = next > 0 ? next : 1;
-                }}
-                className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
+                type="checkbox"
+                checked={restockHasPautang}
+                onChange={(e) => setRestockHasPautang(e.target.checked)}
               />
-            </>
-          )}
+              <span>May Pautang Price?</span>
+            </label>
+
+            {restockHasPautang && (
+              <div className="mt-2">
+                <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Pautang (₱)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Iba sa regular na presyo"
+                  value={restockPautangPrice}
+                  onChange={(e) => setRestockPautangPrice(e.target.value)}
+                  className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
+                    theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                  }`}
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
