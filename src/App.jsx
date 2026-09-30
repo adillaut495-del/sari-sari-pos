@@ -37,8 +37,6 @@ import {
   AlertTriangle,
   RotateCcw,
   Smartphone,
-  Camera,
-  ImageUp,
   Maximize2,
   Minimize2,
   Sparkles,
@@ -47,7 +45,8 @@ import {
   Settings,
   HelpCircle,
   TrendingDown,
-  Layers
+  Layers,
+  Landmark
 } from 'lucide-react';
 
 const INITIAL_CATEGORIES = [
@@ -73,7 +72,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 5,
     unit: 'packs',
     barcode: '480001605201',
-    icon: '🥔',
     hasTingi: false
   },
   {
@@ -86,7 +84,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 10,
     unit: 'packs',
     barcode: '480001660102',
-    icon: '🍜',
     hasTingi: false
   },
   {
@@ -99,7 +96,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 6,
     unit: 'bottles',
     barcode: '480001611003',
-    icon: '🧃',
     hasTingi: false
   },
   {
@@ -112,7 +108,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 8,
     unit: 'packs',
     barcode: '480001644004',
-    icon: '☕',
     hasTingi: true,
     tingiUnit: 'sachet',
     tingiRatio: 2, // 2 sachets per twin pack
@@ -128,7 +123,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 10,
     unit: 'sachets',
     barcode: '480001633005',
-    icon: '🥛',
     hasTingi: false
   },
   {
@@ -141,7 +135,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 4,
     unit: 'bars',
     barcode: '480001655006',
-    icon: '🧼',
     hasTingi: false
   },
   {
@@ -154,7 +147,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 5,
     unit: 'cans',
     barcode: '480001677007',
-    icon: '🥫',
     hasTingi: false
   },
   {
@@ -167,7 +159,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 4,
     unit: 'bottles',
     barcode: '480001688008',
-    icon: '🥤',
     hasTingi: false
   },
   {
@@ -180,7 +171,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 4,
     unit: 'bottles',
     barcode: '480001699009',
-    icon: '🍾',
     hasTingi: false
   },
   {
@@ -193,7 +183,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 20,
     unit: 'sticks',
     barcode: '480001600010',
-    icon: '🚬',
     hasTingi: false
   },
   {
@@ -206,7 +195,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 15,
     unit: 'pcs',
     barcode: '480001611011',
-    icon: '🥚',
     hasTingi: false
   },
   {
@@ -219,7 +207,6 @@ const INITIAL_PRODUCTS = [
     reorderLevel: 10,
     unit: 'pcs',
     barcode: '480001622012',
-    icon: '🧄',
     hasTingi: false
   }
 ];
@@ -242,8 +229,58 @@ const normalizeCustomer = (customer = {}) => ({
   ledger: Array.isArray(customer.ledger) ? customer.ledger.map((entry) => ({
     ...entry,
     amount: Number(entry.amount) || 0
-  })) : []
+  })) : [],
+  // Pautang sub-ledger: each record is one payout with its own instalment schedule.
+  pautang: Array.isArray(customer.pautang) ? customer.pautang.map(normalizePautangRecord) : []
 });
+
+/** Normalises a single Pautang record and keeps its instalment maths self-consistent. */
+const normalizePautangRecord = (record = {}) => {
+  const totalPrice = Number(record.totalPrice) || 0;
+  const paid = Number(record.paid) || 0;
+  const instalments = Array.isArray(record.instalments)
+    ? record.instalments.map((entry) => ({
+      ...entry,
+      amount: Number(entry.amount) || 0
+    }))
+    : [];
+
+  return {
+    ...record,
+    totalPrice,
+    downPayment: Number(record.downPayment) || 0,
+    paid,
+    balance: Math.max(0, Math.round((totalPrice - paid) * 100) / 100),
+    status: record.status || 'Active',
+    items: Array.isArray(record.items) ? record.items : [],
+    instalments
+  };
+};
+
+/** Total still owed across all active Pautang records of a customer. */
+const getPautangBalance = (customer) => {
+  const records = Array.isArray(customer?.pautang) ? customer.pautang : [];
+  return Math.round(records
+    .filter((record) => record.status !== 'Redeemed')
+    .reduce((total, record) => total + (Number(record.balance) || 0), 0) * 100) / 100;
+};
+
+/**
+ * Splits the remaining balance into equal instalments. `count` is validated by
+ * the caller; this helper also protects against a zero/negative remainder.
+ */
+const buildInstalmentSchedule = (balance, count) => {
+  const total = Math.max(0, Number(balance) || 0);
+  const installments = Math.max(1, Math.floor(Number(count) || 1));
+  const perInstalment = Math.round((total / installments) * 100) / 100;
+
+  // Absorb rounding drift into the final instalment so the sum is always exact.
+  const schedule = Array.from({ length: installments }, () => perInstalment);
+  const drift = Math.round((total - perInstalment * installments) * 100) / 100;
+  schedule[schedule.length - 1] = Math.round((schedule[schedule.length - 1] + drift) * 100) / 100;
+
+  return schedule;
+};
 
 const DEFAULT_STORE_PROFILE = {
   storeName: 'Tindahan ni Ate Inday',
@@ -288,28 +325,105 @@ const playScanSuccessSound = () => {
   }
 };
 
-const isImageSource = (value) => {
-  if (typeof value !== 'string') return false;
-  const trimmed = value.trim();
-  return trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/');
+/* ---------------------------------------------------------------------------
+ * ID generation
+ *
+ * Every id is minted as  PREFIX-BASE36TIME-BASE36SEQUENCE-RANDOM  and checked
+ * against a process-wide registry that is seeded with the ids already stored
+ * in the database. Two records created in the same millisecond therefore can
+ * never collide, and a re-used id can never overwrite an existing record.
+ * ------------------------------------------------------------------------- */
+
+const ID_REGISTRY = new Set();
+let idSequence = 0;
+
+const randomIdToken = () => {
+  const cryptoObj = globalThis.crypto;
+
+  if (typeof cryptoObj?.randomUUID === 'function') {
+    return cryptoObj.randomUUID().replace(/-/g, '').slice(0, 10);
+  }
+
+  if (typeof cryptoObj?.getRandomValues === 'function') {
+    const bytes = new Uint8Array(5);
+    cryptoObj.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  return Math.random().toString(36).slice(2, 12);
 };
 
-const getProductImageSource = (product) => {
-  if (isImageSource(product?.image)) return product.image;
-  if (isImageSource(product?.icon)) return product.icon;
-  return '';
+const createUniqueId = (prefix) => {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    idSequence += 1;
+    const candidate = [
+      prefix,
+      Date.now().toString(36).toUpperCase(),
+      idSequence.toString(36).toUpperCase(),
+      randomIdToken().toUpperCase()
+    ].join('-');
+
+    if (!ID_REGISTRY.has(candidate)) {
+      ID_REGISTRY.add(candidate);
+      return candidate;
+    }
+  }
+
+  // Practically unreachable, but never hand back a known duplicate.
+  const fallback = `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomIdToken().toUpperCase()}${randomIdToken().toUpperCase()}`;
+  ID_REGISTRY.add(fallback);
+  return fallback;
 };
 
-const getProductDisplayIcon = (product) => {
-  const imageSource = getProductImageSource(product);
-  if (imageSource) return null;
-  if (typeof product?.icon === 'string' && product.icon.trim() && !product.icon.startsWith('data:image/')) {
-    return product.icon;
-  }
-  if (typeof product?.image === 'string' && product.image.trim() && !product.image.startsWith('data:image/')) {
-    return product.image;
-  }
-  return '📦';
+const registerIdsFrom = ({ products = [], customers = [], sales = [] } = {}) => {
+  ID_REGISTRY.clear();
+
+  products.forEach((product) => {
+    if (product?.id) ID_REGISTRY.add(product.id);
+    (Array.isArray(product?.stockLedger) ? product.stockLedger : []).forEach((entry) => {
+      if (entry?.id) ID_REGISTRY.add(entry.id);
+    });
+  });
+
+  customers.forEach((customer) => {
+    if (customer?.id) ID_REGISTRY.add(customer.id);
+    (Array.isArray(customer?.ledger) ? customer.ledger : []).forEach((entry) => {
+      if (entry?.id) ID_REGISTRY.add(entry.id);
+    });
+  });
+
+  sales.forEach((sale) => {
+    if (sale?.id) ID_REGISTRY.add(sale.id);
+  });
+};
+
+/**
+ * Repairs ids that are missing or duplicated inside an already stored
+ * database. The first record holding a given id keeps it (so historical
+ * references such as sales items and ledger orderIds keep resolving to the
+ * original record); every later duplicate receives a freshly minted id.
+ */
+const ensureUniqueIds = ({ products = [], customers = [], sales = [] } = {}) => {
+  const dedupe = (records, prefix) => {
+    const seen = new Set();
+
+    return records.map((record) => {
+      const currentId = typeof record?.id === 'string' ? record.id.trim() : '';
+
+      if (currentId && !seen.has(currentId)) {
+        seen.add(currentId);
+        return record;
+      }
+
+      return { ...record, id: createUniqueId(prefix) };
+    });
+  };
+
+  return {
+    products: dedupe(products, 'P'),
+    customers: dedupe(customers, 'C'),
+    sales: dedupe(sales, 'TRX')
+  };
 };
 
 const normalizeProduct = (product = {}) => {
@@ -318,17 +432,22 @@ const normalizeProduct = (product = {}) => {
   const stock = Number(product.stock) || 0;
   const reorderLevel = Number(product.reorderLevel) || 0;
   const tingiPrice = Number(product.tingiPrice) || 0;
+  const pautangPrice = Number(product.pautangPrice) || 0;
+  const hasPautang = Boolean(product.hasPautang);
   const stockLedger = Array.isArray(product.stockLedger) ? product.stockLedger : [];
 
-  const imageValue = isImageSource(product.image) ? product.image : isImageSource(product.icon) ? product.icon : '';
-  const iconValue = imageValue ? '📦' : (typeof product.icon === 'string' && product.icon.trim() && !product.icon.startsWith('data:image/')) ? product.icon : '📦';
+  // `brand`, `packageSize`, `image` and `icon` were removed from the product
+  // model, so drop any legacy values still present in a stored database.
+  const rest = { ...product };
+  delete rest.brand;
+  delete rest.packageSize;
+  delete rest.image;
+  delete rest.icon;
 
   return {
-    ...product,
-    id: product.id || `P-${Math.floor(100 + Math.random() * 900)}`,
+    ...rest,
+    id: product.id || createUniqueId('P'),
     name: product.name || 'New Product',
-    brand: product.brand || '',
-    packageSize: product.packageSize || '',
     category: product.category || 'Uncategorized',
     costPrice,
     retailPrice,
@@ -336,10 +455,12 @@ const normalizeProduct = (product = {}) => {
     reorderLevel,
     unit: product.unit || 'pcs',
     barcode: product.barcode || '',
-    image: imageValue,
-    icon: iconValue,
     hasTingi: Boolean(product.hasTingi),
     tingiPrice,
+    hasPautang,
+    // A Pautang price is always its own figure; fall back to retail so a
+    // half-configured item never becomes free.
+    pautangPrice: hasPautang ? (pautangPrice || retailPrice) : 0,
     barcodeText: product.barcode || '',
     stockLedger
   };
@@ -417,19 +538,36 @@ export default function App() {
       setSetupComplete(Boolean(data.setupComplete));
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
       setScanIntervalMs(Number(data.scanIntervalMs) > 0 ? Number(data.scanIntervalMs) : 2000);
-      setProducts((data.products || INITIAL_PRODUCTS).map(normalizeProduct));
+      // Repair any duplicate / missing ids already present in the stored database.
+      const repaired = ensureUniqueIds({
+        products: (data.products || INITIAL_PRODUCTS).map(normalizeProduct),
+        customers: data.customers || INITIAL_CUSTOMERS,
+        sales: data.sales || INITIAL_SALES
+      });
+      const loadedProducts = repaired.products;
+      const loadedCustomers = repaired.customers.map(normalizeCustomer);
+      const loadedSales = repaired.sales;
+
+      registerIdsFrom({ products: loadedProducts, customers: loadedCustomers, sales: loadedSales });
+
+      setProducts(loadedProducts);
       setCategories(data.categories || INITIAL_CATEGORIES);
-      setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
-      setSalesHistory(data.sales || INITIAL_SALES);
+      setCustomers(loadedCustomers);
+      setSalesHistory(loadedSales);
     } catch (error) {
       console.error(error);
       setTheme('light');
       setSetupComplete(false);
       setStoreProfile(DEFAULT_STORE_PROFILE);
       setScanIntervalMs(2000);
-      setProducts(INITIAL_PRODUCTS.map(normalizeProduct));
+      const resetProducts = INITIAL_PRODUCTS.map(normalizeProduct);
+      const resetCustomers = INITIAL_CUSTOMERS.map(normalizeCustomer);
+
+      registerIdsFrom({ products: resetProducts, customers: resetCustomers, sales: INITIAL_SALES });
+
+      setProducts(resetProducts);
       setCategories(INITIAL_CATEGORIES);
-      setCustomers(INITIAL_CUSTOMERS.map(normalizeCustomer));
+      setCustomers(resetCustomers);
       setSalesHistory(INITIAL_SALES);
     } finally {
       setIsDataLoaded(true);
@@ -564,9 +702,12 @@ export default function App() {
 
   // Payment Checkout Modal
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState('Cash'); // 'Cash', 'GCash', 'Utang'
+  const [paymentMethod, setPaymentMethod] = useState('Cash'); // 'Cash', 'GCash', 'Utang', 'Pautang'
   const [tenderedCash, setTenderedCash] = useState('');
   const [selectedUtangCustomer, setSelectedUtangCustomer] = useState('');
+  // Pautang terms: down payment + how many equal instalments to settle the rest.
+  const [pautangDownPayment, setPautangDownPayment] = useState('');
+  const [pautangInstalmentCount, setPautangInstalmentCount] = useState(1);
   const [paymentStep, setPaymentStep] = useState('method'); // 'method', 'receipt'
   const [lastCompletedOrder, setLastCompletedOrder] = useState(null);
 
@@ -623,10 +764,22 @@ export default function App() {
       setTheme(data.theme || 'light');
       setSetupComplete(Boolean(data.setupComplete));
       setStoreProfile(data.storeProfile || DEFAULT_STORE_PROFILE);
-      setProducts((data.products || INITIAL_PRODUCTS).map(normalizeProduct));
+      // Repair any duplicate / missing ids already present in the stored database.
+      const repaired = ensureUniqueIds({
+        products: (data.products || INITIAL_PRODUCTS).map(normalizeProduct),
+        customers: data.customers || INITIAL_CUSTOMERS,
+        sales: data.sales || INITIAL_SALES
+      });
+      const loadedProducts = repaired.products;
+      const loadedCustomers = repaired.customers.map(normalizeCustomer);
+      const loadedSales = repaired.sales;
+
+      registerIdsFrom({ products: loadedProducts, customers: loadedCustomers, sales: loadedSales });
+
+      setProducts(loadedProducts);
       setCategories(data.categories || INITIAL_CATEGORIES);
-      setCustomers((data.customers || INITIAL_CUSTOMERS).map(normalizeCustomer));
-      setSalesHistory(data.sales || INITIAL_SALES);
+      setCustomers(loadedCustomers);
+      setSalesHistory(loadedSales);
       showToast('Local database reset to initial setup');
     } catch (error) {
       console.error('Reset failed:', error);
@@ -669,10 +822,25 @@ export default function App() {
   }, [subtotal, discountAmount]);
 
   // Cart Actions
-  const addToCart = (product, isTingi = false, quantity = 1) => {
-    const itemPrice = isTingi ? product.tingiPrice : product.retailPrice;
-    const itemName = isTingi ? `${product.name} (Tingi / Sachet)` : product.name;
-    const cartItemId = isTingi ? `${product.id}-tingi` : product.id;
+  // `mode` selects which price applies: '' = regular, 'tingi' = sachet,
+  // 'pautang' = the item's own (usually higher) Pautang price.
+  const addToCart = (product, mode = '', quantity = 1) => {
+    const isTingi = mode === 'tingi';
+    const isPautang = mode === 'pautang';
+
+    const itemPrice = isTingi
+      ? product.tingiPrice
+      : isPautang
+        ? product.pautangPrice
+        : product.retailPrice;
+
+    const itemName = isTingi
+      ? `${product.name} (Tingi / Sachet)`
+      : isPautang
+        ? `${product.name} (Pautang)`
+        : product.name;
+
+    const cartItemId = isTingi ? `${product.id}-tingi` : isPautang ? `${product.id}-pautang` : product.id;
     const requestedQuantity = Math.max(1, Number(quantity) || 1);
 
     if (product.stock <= 0) {
@@ -680,10 +848,20 @@ export default function App() {
       return;
     }
 
+    // Pautang units are sold whole, so the stock check uses the raw quantity.
+    const stockAvailable = isTingi && product.tingiRatio
+      ? Math.floor(product.stock * product.tingiRatio)
+      : product.stock;
+
+    if (requestedQuantity > stockAvailable) {
+      showToast(`Limit reached for current stock level! (${stockAvailable} available)`, 'error');
+      return;
+    }
+
     setCart((prev) => {
       const existing = prev.find((i) => i.cartItemId === cartItemId);
       if (existing) {
-        if (existing.quantity + requestedQuantity > product.stock) {
+        if (existing.quantity + requestedQuantity > stockAvailable) {
           showToast(`Limit reached for current stock level!`, 'error');
           return prev;
         }
@@ -698,8 +876,9 @@ export default function App() {
           productId: product.id,
           name: itemName,
           itemPrice,
-          quantity: Math.min(requestedQuantity, product.stock),
+          quantity: Math.min(requestedQuantity, stockAvailable),
           isTingi,
+          isPautang,
           baseProduct: product
         }
       ];
@@ -710,7 +889,7 @@ export default function App() {
 
   const handleScanQuantityConfirm = () => {
     if (!pendingScannedProduct) return;
-    addToCart(pendingScannedProduct, false, scanQuantity);
+    addToCart(pendingScannedProduct, '', scanQuantity);
     setPendingScannedProduct(null);
     setScanQuantity(1);
   };
@@ -739,6 +918,8 @@ export default function App() {
     setDiscountPercent(0);
     setTenderedCash('');
     setSelectedUtangCustomer('');
+    setPautangDownPayment('');
+    setPautangInstalmentCount(1);
     setPaymentMethod('Cash');
   };
 
@@ -757,20 +938,27 @@ export default function App() {
       return;
     }
 
+    if (paymentMethod === 'Pautang' && !selectedUtangCustomer) {
+      showToast('Please select a customer for the Pautang ledger!', 'error');
+      return;
+    }
+
+    const isCreditMethod = paymentMethod === 'Utang' || paymentMethod === 'Pautang';
     const customerObj = customers.find((c) => c.id === selectedUtangCustomer);
-    const customerName = paymentMethod === 'Utang' ? (customerObj ? customerObj.name : 'Utang Customer') : 'Walk-in Suki';
+    const customerName = isCreditMethod ? (customerObj ? customerObj.name : 'Suki') : 'Walk-in Suki';
 
     const newOrder = {
-      id: `TRX-${Math.floor(1000 + Math.random() * 9000)}`,
+      id: createUniqueId('TRX'),
       timestamp: new Date().toISOString(),
       customerName,
-      customerId: paymentMethod === 'Utang' ? selectedUtangCustomer : null,
+      customerId: isCreditMethod ? selectedUtangCustomer : null,
       items: cart.map((c) => ({
         id: c.productId,
         name: c.name,
         price: c.itemPrice,
         quantity: c.quantity,
-        isTingi: c.isTingi
+        isTingi: c.isTingi,
+        isPautang: Boolean(c.isPautang)
       })),
       subtotal,
       discount: discountAmount,
@@ -804,7 +992,7 @@ export default function App() {
           stock: newStock,
           stockLedger: [
             {
-              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              id: createUniqueId('STK'),
               type: 'sale',
               quantity: -totalStockDeduction,
               date: new Date().toISOString(),
@@ -828,7 +1016,7 @@ export default function App() {
             balance: nextBalance,
             ledger: [
               {
-                id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+                id: createUniqueId('L'),
                 type: 'sale',
                 amount: totalAmount,
                 date: new Date().toISOString(),
@@ -886,7 +1074,7 @@ export default function App() {
           stock: Math.round((prod.stock + stockToAdd) * 100) / 100,
           stockLedger: [
             {
-              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              id: createUniqueId('STK'),
               type: 'void',
               quantity: stockToAdd,
               date: new Date().toISOString(),
@@ -910,7 +1098,7 @@ export default function App() {
             balance: nextBalance,
             ledger: [
               {
-                id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+                id: createUniqueId('L'),
                 type: 'voided_sale',
                 amount: order.totalAmount,
                 date: new Date().toISOString(),
@@ -948,7 +1136,7 @@ export default function App() {
       );
       showToast(`Updated product ${normalizedProduct.name}`);
     } else {
-      const newProd = normalizeProduct({ ...normalizedProduct, id: `P-${Math.floor(100 + Math.random() * 900)}` });
+      const newProd = normalizeProduct({ ...normalizedProduct, id: createUniqueId('P') });
       setProducts((prev) => [newProd, ...prev]);
       showToast(`New item added: ${normalizedProduct.name}`);
     }
@@ -989,11 +1177,11 @@ export default function App() {
           tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1,
           stockLedger: [
             {
-              id: `STK-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              id: createUniqueId('STK'),
               type: 'restock',
               quantity: qty,
               date: new Date().toISOString(),
-              reference: `RESTOCK-${Date.now()}`,
+              reference: createUniqueId('RESTOCK'),
               description: 'Manual stock in'
             },
             ...(Array.isArray(p.stockLedger) ? p.stockLedger : [])
@@ -1016,7 +1204,7 @@ export default function App() {
   const handleSaveCustomer = (custData) => {
     const newCust = normalizeCustomer({
       ...custData,
-      id: `C-${Math.floor(10 + Math.random() * 90)}`,
+      id: createUniqueId('C'),
       balance: parseFloat(custData.balance) || 0,
       ledger: []
     });
@@ -1041,12 +1229,12 @@ export default function App() {
           balance: nextBalance,
           ledger: [
             {
-              id: `L-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+              id: createUniqueId('L'),
               type: 'payment',
               amount: amt,
               date: new Date().toISOString(),
               description: `Payment received from ${c.name}`,
-              orderId: `PMT-${Date.now()}`,
+              orderId: createUniqueId('PMT'),
               items: []
             },
             ...(Array.isArray(c.ledger) ? c.ledger : [])
@@ -1184,7 +1372,7 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen w-full flex flex-col transition-colors duration-300 font-sans ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/50 text-slate-900'}`}>
+    <div className={`h-[100dvh] w-full flex flex-col overflow-hidden transition-colors duration-300 font-sans ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-amber-50/50 text-slate-900'}`}>
       {isOffline && (
         <div className="w-full border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-bold text-amber-900 shadow-sm">
           Offline mode active • local POS data stays saved on this device
@@ -1226,7 +1414,7 @@ export default function App() {
         </div>
 
         {/* Dynamic Viewport Container */}
-        <div className="flex-1 overflow-y-auto relative flex flex-col bg-slate-100/50 dark:bg-slate-950/40 pb-20">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain relative flex flex-col bg-slate-100/50 dark:bg-slate-950/40 pb-20">
           {activeTab === 'register' && (
             <RegisterView
               theme={theme}
@@ -1711,6 +1899,7 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
 
           const cartPackItem = cart.find((ci) => ci.cartItemId === item.id);
           const cartTingiItem = cart.find((ci) => ci.cartItemId === `${item.id}-tingi`);
+          const cartPautangItem = cart.find((ci) => ci.cartItemId === `${item.id}-pautang`);
 
           return (
             <div
@@ -1724,7 +1913,7 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
               }`}
             >
               {/* Quantities in cart indicator */}
-              {(cartPackItem || cartTingiItem) && (
+              {(cartPackItem || cartTingiItem || cartPautangItem) && (
                 <div className="absolute -top-2 -right-1 flex space-x-1">
                   {cartPackItem && (
                     <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full shadow-md">
@@ -1736,17 +1925,18 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
                       {cartTingiItem.quantity}x (T)
                     </span>
                   )}
+                  {cartPautangItem && (
+                    <span className="bg-indigo-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full shadow-md">
+                      {cartPautangItem.quantity}x (P)
+                    </span>
+                  )}
                 </div>
               )}
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <div className="w-8 h-8 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 flex items-center justify-center">
-                    {item.image ? (
-                      <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-xl">{item.icon || '📦'}</span>
-                    )}
+                  <div className="w-8 h-8 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 flex items-center justify-center text-xl">
+                    📦
                   </div>
                   <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
                     isOut
@@ -1760,14 +1950,14 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
                 </div>
 
                 <h3 className="font-bold text-xs leading-snug line-clamp-2">{item.name}</h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">{item.brand || item.category}{item.packageSize ? ` • ${item.packageSize}` : ''}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">{item.category}</p>
               </div>
 
               {/* Action Buttons */}
               <div className="mt-3 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
                 <button
                   disabled={isOut}
-                  onClick={() => addToCart(item, false)}
+                  onClick={() => addToCart(item, '')}
                   className={`w-full py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-between transition ${
                     isOut
                       ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
@@ -1782,11 +1972,23 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
                 {item.hasTingi && (
                   <button
                     disabled={isOut}
-                    onClick={() => addToCart(item, true)}
+                    onClick={() => addToCart(item, 'tingi')}
                     className="w-full py-1 px-2 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 hover:bg-emerald-600 hover:text-white transition flex items-center justify-between"
                   >
                     <span>Tingi: ₱{item.tingiPrice.toFixed(2)}</span>
                     <Sparkles className="w-3 h-3" />
+                  </button>
+                )}
+
+                {/* Pautang Option - priced differently from the regular shelf price */}
+                {item.hasPautang && (
+                  <button
+                    disabled={isOut}
+                    onClick={() => addToCart(item, 'pautang')}
+                    className="w-full py-1 px-2 rounded-lg text-[10px] font-bold bg-indigo-500/10 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 hover:bg-indigo-600 hover:text-white transition flex items-center justify-between"
+                  >
+                    <span>Pautang: ₱{item.pautangPrice.toFixed(2)}</span>
+                    <Landmark className="w-3 h-3" />
                   </button>
                 )}
               </div>
@@ -1807,15 +2009,44 @@ function RegisterView({ theme, products, categories, selectedCategory, setSelect
   );
 }
 
+/**
+ * Shared modal shell used by every dialog in the app.
+ *
+ * Fixes the core layout bug: panels are capped to the real viewport height
+ * (`dvh`, so mobile browser chrome / on-screen keyboards behave), the content
+ * area scrolls, and the header/footer stay pinned. Previously panels were
+ * unconstrained and centered, so tall forms were clipped by the app shell's
+ * `overflow-hidden` and the Save button could not be reached.
+ */
+function ModalShell({ theme, onClose, maxWidth = 'max-w-sm', children }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-black/70 p-3 animate-fade-in sm:p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        className={`flex max-h-[92dvh] w-full ${maxWidth} flex-col overflow-hidden rounded-3xl shadow-2xl ${
+          theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
+        }`}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function CartDrawer({ theme, cart, updateCartQty, removeFromCart, discountPercent, setDiscountPercent, subtotal, discountAmount, totalAmount, onClose, onCheckout }) {
   return (
     <div className="fixed inset-0 bg-black/60 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
-      <div className={`w-full max-h-[78vh] rounded-t-[32px] p-4 pb-4 flex flex-col shadow-2xl transition-colors ${
+      <div className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[32px] p-4 pb-4 shadow-2xl transition-colors ${
         theme === 'dark' ? 'bg-slate-900 text-white border-t border-slate-800' : 'bg-white text-slate-900'
       }`}>
         
         {/* Drawer Header */}
-        <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
+        <div className="shrink-0 flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center space-x-2">
             <ShoppingBag className="w-5 h-5 text-amber-500" />
             <h2 className="font-extrabold text-sm">Resibo ng Binibili (Cart)</h2>
@@ -1911,11 +2142,11 @@ function PaymentCheckoutModal({ theme, storeProfile, paymentStep, setPaymentStep
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
-      <div className={`w-full max-h-[78vh] rounded-t-[32px] p-4 pb-4 flex flex-col shadow-2xl ${
+      <div className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[32px] p-4 pb-4 shadow-2xl ${
         theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
       }`}>
 
-        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+        <div className="shrink-0 flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
           <h2 className="font-extrabold text-sm flex items-center space-x-2">
             {paymentStep === 'receipt' ? (
               <>
@@ -2136,10 +2367,8 @@ function ScanQuantityModal({ theme, product, quantity, setQuantity, onConfirm, o
         </div>
 
         <div className="text-center">
-          <p className="font-bold text-sm">{product.brand ? `${product.brand} ` : ''}{product.name}</p>
-          {(product.packageSize || product.brand) && (
-            <p className="mt-1 text-[10px] text-slate-400">{product.packageSize || 'Package size not set'}</p>
-          )}
+          <p className="font-bold text-sm">{product.name}</p>
+          <p className="mt-1 text-[10px] text-slate-400">{product.category}</p>
           <p className="mt-1 text-xs text-slate-500">Available: {product.stock} {product.unit}</p>
         </div>
 
@@ -2178,13 +2407,13 @@ function InventoryItemModal({ theme, product, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-xs animate-fade-in">
-      <div className={`max-h-[82vh] w-full rounded-t-[32px] p-4 pb-5 shadow-2xl ${
+      <div className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[32px] p-4 pb-5 shadow-2xl ${
         theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
       }`}>
-        <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
+        <div className="shrink-0 flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500">Inventory ledger</p>
-            <h3 className="truncate font-black text-lg">{product.brand ? `${product.brand} ` : ''}{product.name}</h3>
+            <h3 className="truncate font-black text-lg">{product.name}</h3>
           </div>
           <button onClick={onClose} className="p-1 text-slate-400" aria-label="Close inventory ledger">
             <X className="w-5 h-5" />
@@ -2197,12 +2426,12 @@ function InventoryItemModal({ theme, product, onClose }) {
             <p className="mt-1 text-2xl font-black text-amber-600">{product.stock} {product.unit}</p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Package size</p>
-            <p className="mt-1 text-sm font-black">{product.packageSize || 'Not set'}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Category</p>
+            <p className="mt-1 text-sm font-black">{product.category || 'Uncategorized'}</p>
           </div>
         </div>
 
-        <div className="mt-3 max-h-[48vh] space-y-2 overflow-y-auto pr-1">
+        <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
           {stockLedger.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700">
               No inventory movements recorded yet.
@@ -2231,7 +2460,7 @@ function InventoryItemModal({ theme, product, onClose }) {
           )}
         </div>
 
-        <button onClick={onClose} className="mt-3 w-full rounded-2xl border border-slate-300 py-3 text-sm font-black dark:border-slate-700">
+        <button onClick={onClose} className="mt-3 w-full shrink-0 rounded-2xl border border-slate-300 py-3 text-sm font-black dark:border-slate-700">
           Close
         </button>
       </div>
@@ -2243,22 +2472,22 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
   const [viewingProduct, setViewingProduct] = useState(null);
 
   return (
-    <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-black text-sm">Paninda Inventory (CRUD)</h2>
+    <div className="flex min-h-0 flex-1 flex-col p-3 pb-6">
+      <div className="shrink-0 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate font-black text-sm">Paninda Inventory (CRUD)</h2>
           <p className="text-[10px] text-slate-400">{products.length} Kabuuang Items</p>
         </div>
         <button
           onClick={onAddProduct}
-          className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-xl font-bold text-xs flex items-center space-x-1 shadow-sm"
+          className="shrink-0 bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-xl font-bold text-xs flex items-center space-x-1 shadow-sm"
         >
           <Plus className="w-4 h-4" />
-          <span>Dagdag Paninda</span>
+          <span className="whitespace-nowrap">Dagdag Paninda</span>
         </button>
       </div>
 
-      <div className="space-y-2">
+      <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
         {products.map((p) => {
           const isLow = p.stock <= p.reorderLevel;
           return (
@@ -2269,16 +2498,12 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
               }`}
             >
               <div className="flex items-center space-x-2.5">
-                {getProductImageSource(p) ? (
-                  <img src={getProductImageSource(p)} alt={p.name} className="h-10 w-10 rounded-xl object-cover border border-slate-200 dark:border-slate-700" />
-                ) : (
-                  <span className="text-2xl">{getProductDisplayIcon(p)}</span>
-                )}
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-xl dark:border-slate-700 dark:bg-slate-800">
+                  📦
+                </span>
                 <div>
                   <h4 className="font-bold text-xs">{p.name}</h4>
-                  {(p.brand || p.packageSize) && (
-                    <p className="text-[10px] text-slate-400">{p.brand || 'No brand'}{p.packageSize ? ` • ${p.packageSize}` : ''}</p>
-                  )}
+                  <p className="text-[10px] text-slate-400">{p.category}</p>
                   <div className="text-[10px] text-slate-400 space-x-2">
                     <span>Puhunan: ₱{p.costPrice.toFixed(2)}</span>
                     <span>•</span>
@@ -2335,8 +2560,6 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
 function ProductFormModal({ theme, categories, product, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: product?.name || '',
-    brand: product?.brand || '',
-    packageSize: product?.packageSize || '',
     category: product?.category || categories[1] || 'Snacks',
     costPrice: product?.costPrice || '',
     retailPrice: product?.retailPrice || '',
@@ -2344,8 +2567,6 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     reorderLevel: product?.reorderLevel || 5,
     unit: product?.unit || 'pcs',
     barcode: product?.barcode || '',
-    image: product?.image || product?.icon || '',
-    icon: product?.icon || product?.image || '📦',
     hasTingi: product?.hasTingi || false,
     tingiPrice: product?.tingiPrice || '',
     tingiRatio: product?.tingiRatio || 1
@@ -2419,18 +2640,6 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     };
   }, [isScannerOpen]);
 
-  const handleImageUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result;
-      setFormData((prev) => ({ ...prev, image: String(base64), icon: String(base64) }));
-    };
-    reader.readAsDataURL(file);
-  };
-
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!formData.name) return;
@@ -2442,22 +2651,23 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
       stock: parseFloat(formData.stock) || 0,
       reorderLevel: parseFloat(formData.reorderLevel) || 5,
       tingiPrice: parseFloat(formData.tingiPrice) || 0,
-      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1,
-      image: formData.image || formData.icon || ''
+      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1
     });
   };
 
   return (
-    <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className={`w-full max-w-sm rounded-3xl p-4 space-y-3 ${
-        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
-      }`}>
-        <div className="flex justify-between items-center pb-2 border-b border-slate-200 dark:border-slate-800">
-          <h3 className="font-extrabold text-sm">{product ? 'I-edit ang Paninda' : 'Bagong Paninda Form'}</h3>
-          <button onClick={onClose} className="p-1 text-slate-400"><X className="w-4 h-4" /></button>
+    <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-sm">
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col text-xs">
+        {/* Pinned header */}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <h3 className="truncate font-extrabold text-sm">{product ? 'I-edit ang Paninda' : 'Bagong Paninda Form'}</h3>
+          <button type="button" onClick={onClose} aria-label="Close product form" className="shrink-0 p-1 text-slate-400">
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-2 text-xs">
+        {/* Scrollable body */}
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3">
           <div>
             <label className="font-bold text-slate-500 block">Pangalan ng Paninda</label>
             <input
@@ -2469,33 +2679,6 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
                 theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
               }`}
             />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="font-bold text-slate-500 block">Brand</label>
-              <input
-                type="text"
-                value={formData.brand}
-                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
-                placeholder="e.g. Coca-Cola"
-                className={`w-full p-2 rounded-xl border font-bold ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
-              />
-            </div>
-            <div>
-              <label className="font-bold text-slate-500 block">Package Size / Net Contents</label>
-              <input
-                type="text"
-                value={formData.packageSize}
-                onChange={(e) => setFormData({ ...formData, packageSize: e.target.value })}
-                placeholder="e.g. 500ml"
-                className={`w-full p-2 rounded-xl border font-bold ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
-              />
-            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -2524,45 +2707,6 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
                 }`}
               />
             </div>
-          </div>
-
-          <div>
-            <label className="font-bold text-slate-500 block">Image sa Paninda</label>
-            <div className="flex gap-2">
-              <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-2 py-2 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                <ImageUp className="w-3.5 h-3.5" />
-                <span>Upload</span>
-                <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-              </label>
-              <button
-                type="button"
-                onClick={() => setIsScannerOpen(true)}
-                className="flex items-center justify-center gap-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-2 text-[10px] font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-              >
-                <Camera className="w-3.5 h-3.5" />
-                Scan
-              </button>
-            </div>
-            <input
-              type="url"
-              value={formData.image}
-              onChange={(e) => setFormData({ ...formData, image: e.target.value, icon: e.target.value || '📦' })}
-              placeholder="https://..."
-              className={`mt-2 w-full p-2 rounded-xl border font-bold ${
-                theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-              }`}
-            />
-            {formData.image && (
-              <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-800">
-                <img src={formData.image} alt="Product preview" className="h-20 w-full object-cover rounded-lg" />
-              </div>
-            )}
-            {cameraError && <p className="mt-2 text-[10px] text-red-500">{cameraError}</p>}
-            {isScannerOpen && (
-              <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
-                <video ref={videoRef} className="h-32 w-full object-cover" muted playsInline autoPlay />
-              </div>
-            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -2631,28 +2775,32 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
             )}
           </div>
 
+        </div>
+
+        {/* Pinned footer - Save button is always reachable */}
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
           <button
             type="submit"
-            className="w-full bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-xl font-black shadow-md mt-2"
+            className="w-full bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-xl font-black shadow-md"
           >
             I-save ang Paninda
           </button>
-        </form>
-      </div>
-    </div>
+        </div>
+      </form>
+    </ModalShell>
   );
 }
 
 function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, onConfirm, onClose }) {
   return (
-    <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className={`w-full max-w-xs rounded-3xl p-4 space-y-3 ${
-        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
-      }`}>
-        <h3 className="font-black text-sm">Stock In: {product.name}</h3>
-        <p className="text-xs text-slate-400">Magdagdag ng karagdagang stock sa bodega.</p>
+    <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <h3 className="truncate font-black text-sm">Stock In: {product.name}</h3>
+          <p className="mt-0.5 text-xs text-slate-400">Magdagdag ng karagdagang stock sa bodega.</p>
+        </div>
 
-        <div className="space-y-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3">
           <input
             type="number"
             placeholder="Bilang ng Idadagdag (e.g. 24)"
@@ -2715,16 +2863,18 @@ function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPr
           )}
         </div>
 
-        <div className="flex space-x-2 pt-1">
-          <button onClick={onClose} className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300">
-            Kanselahin
-          </button>
-          <button onClick={onConfirm} className="flex-1 bg-amber-500 text-white py-2 rounded-xl font-bold text-xs shadow-md">
-            I-confirm
-          </button>
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+          <div className="flex space-x-2">
+            <button onClick={onClose} className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300 dark:border-slate-600">
+              Kanselahin
+            </button>
+            <button onClick={onConfirm} className="flex-1 bg-amber-500 text-white py-2 rounded-xl font-bold text-xs shadow-md">
+              I-confirm
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -2816,8 +2966,8 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
       </div>
 
       {selectedCustomer && (
-        <div className="absolute inset-0 bg-black/70 z-50 backdrop-blur-xs flex flex-col justify-end animate-fade-in">
-          <div className={`w-full h-[92%] rounded-t-[32px] p-4 pb-20 flex flex-col shadow-2xl ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'}`}>
+        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-xs animate-fade-in">
+          <div className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[32px] p-4 pb-5 shadow-2xl ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'}`}>
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-amber-500 font-bold">Suki Ledger</p>
@@ -2834,7 +2984,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad }) {
               <p className="text-[10px] text-slate-500 dark:text-slate-300">{selectedCustomer.phone || 'Walang numero'} • {selectedCustomerEntries.length} entry</p>
             </div>
 
-            <div className="flex-1 overflow-y-auto mt-3 space-y-2 pr-1">
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
               {selectedCustomerEntries.length === 0 ? (
                 <div className={`rounded-2xl border p-4 text-center text-xs ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-500'}`}>
                   Walang utang o bayad na naitala para sa {selectedCustomer.name}.
@@ -3046,12 +3196,13 @@ function CustomerFormModal({ theme, onSave, onClose }) {
   };
 
   return (
-    <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className={`w-full max-w-xs rounded-3xl p-4 space-y-3 ${
-        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
-      }`}>
-        <h3 className="font-black text-sm">I-rehistro ang Bagong Suki</h3>
-        <form onSubmit={handleSubmit} className="space-y-2 text-xs">
+    <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col text-xs">
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <h3 className="truncate font-black text-sm">I-rehistro ang Bagong Suki</h3>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3">
           <div>
             <label className="font-bold text-slate-500 block">Pangalan</label>
             <input
@@ -3086,13 +3237,15 @@ function CustomerFormModal({ theme, onSave, onClose }) {
               }`}
             />
           </div>
+        </div>
 
-          <button type="submit" className="w-full bg-amber-500 text-white py-2.5 rounded-xl font-bold shadow-md mt-2">
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+          <button type="submit" className="w-full bg-amber-500 text-white py-2.5 rounded-xl font-bold shadow-md">
             I-save si Suki
           </button>
-        </form>
-      </div>
-    </div>
+        </div>
+      </form>
+    </ModalShell>
   );
 }
 
@@ -3108,19 +3261,20 @@ function PabayadModal({ theme, customer, pabayadAmount, setPabayadAmount, onConf
   ].filter((amount) => Number.isFinite(amount) && amount > 0))).sort((a, b) => a - b);
 
   return (
-    <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className={`w-full max-w-xs rounded-3xl p-4 space-y-3 ${
-        theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'
-      }`}>
-        <h3 className="font-black text-sm">Pabayad sa Utang: {customer.name}</h3>
-        <p className="text-xs text-slate-400">
-          Kasalukuyang Balans:{' '}
-          <span className={`font-bold ${balance < 0 ? 'text-amber-500' : 'text-red-500'}`}>
-            ₱{balance.toFixed(2)}
-          </span>
-        </p>
+    <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <h3 className="truncate font-black text-sm">Pabayad sa Utang: {customer.name}</h3>
+          <p className="mt-0.5 text-xs text-slate-400">
+            Kasalukuyang Balans:{' '}
+            <span className={`font-bold ${balance < 0 ? 'text-amber-500' : 'text-red-500'}`}>
+              ₱{balance.toFixed(2)}
+            </span>
+          </p>
+        </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3">
+          <div className="grid grid-cols-3 gap-2">
           {quickAmounts.map((amount) => (
             <button
               key={amount}
@@ -3142,17 +3296,20 @@ function PabayadModal({ theme, customer, pabayadAmount, setPabayadAmount, onConf
             theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
           }`}
         />
+        </div>
 
-        <div className="flex space-x-2 pt-1">
-          <button onClick={onClose} className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300">
-            Kanselahin
-          </button>
-          <button onClick={onConfirm} className="flex-1 bg-emerald-600 text-white py-2 rounded-xl font-bold text-xs shadow-md">
-            I-record ang Bayad
-          </button>
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+          <div className="flex space-x-2">
+            <button onClick={onClose} className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300 dark:border-slate-600">
+              Kanselahin
+            </button>
+            <button onClick={onConfirm} className="flex-1 bg-emerald-600 text-white py-2 rounded-xl font-bold text-xs shadow-md">
+              I-record ang Bayad
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -3268,11 +3425,7 @@ function AnalyticsDashboardView({ theme, sales, products, customers }) {
             <div className="flex items-center space-x-2">
               <span className="font-black text-amber-500">#{idx + 1}</span>
               <div className="flex items-center gap-2">
-                {getProductImageSource(p) ? (
-                  <img src={getProductImageSource(p)} alt={p.name} className="h-6 w-6 rounded-md object-cover border border-slate-200 dark:border-slate-700" />
-                ) : (
-                  <span className="text-base">{getProductDisplayIcon(p)}</span>
-                )}
+                <span className="text-base">📦</span>
                 <span>{p.name}</span>
               </div>
             </div>

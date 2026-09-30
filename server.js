@@ -63,10 +63,20 @@ function normalizeProduct(product = {}) {
   const stock = Number(product.stock) || 0;
   const reorderLevel = Number(product.reorderLevel) || 0;
   const tingiPrice = Number(product.tingiPrice) || 0;
+  const hasPautang = Boolean(product.hasPautang);
+  const pautangPrice = Number(product.pautangPrice) || 0;
+
+  // `brand`, `packageSize`, `image` and `icon` were removed from the product
+  // model, so drop any legacy values still present in a stored database.
+  const rest = { ...product };
+  delete rest.brand;
+  delete rest.packageSize;
+  delete rest.image;
+  delete rest.icon;
 
   return {
-    ...product,
-    id: product.id || `P-${Math.floor(100 + Math.random() * 900)}`,
+    ...rest,
+    id: product.id || `P-${Date.now().toString(36).toUpperCase()}`,
     name: product.name || 'New Product',
     category: product.category || 'Uncategorized',
     costPrice,
@@ -75,10 +85,46 @@ function normalizeProduct(product = {}) {
     reorderLevel,
     unit: product.unit || 'pcs',
     barcode: product.barcode || '',
-    image: product.image || product.icon || '',
-    icon: product.icon || product.image || '📦',
     hasTingi: Boolean(product.hasTingi),
-    tingiPrice
+    tingiPrice,
+    hasPautang,
+    pautangPrice: hasPautang ? (pautangPrice || retailPrice) : 0
+  };
+}
+
+/**
+ * Guards against duplicate ids inside a stored database. The first record
+ * holding a given id keeps it so existing references stay valid; later
+ * duplicates get a freshly minted id.
+ */
+function ensureUniqueIds(data) {
+  let sequence = 0;
+
+  const nextId = (prefix) => {
+    sequence += 1;
+    return `${prefix}-${Date.now().toString(36).toUpperCase()}${sequence.toString(36).toUpperCase()}`;
+  };
+
+  const dedupe = (records, prefix) => {
+    const seen = new Set();
+
+    return records.map((record) => {
+      const currentId = typeof record?.id === 'string' ? record.id.trim() : '';
+
+      if (currentId && !seen.has(currentId)) {
+        seen.add(currentId);
+        return record;
+      }
+
+      return { ...record, id: nextId(prefix) };
+    });
+  };
+
+  return {
+    ...data,
+    products: dedupe(Array.isArray(data.products) ? data.products : [], 'P'),
+    customers: dedupe(Array.isArray(data.customers) ? data.customers : [], 'C'),
+    sales: dedupe(Array.isArray(data.sales) ? data.sales : [], 'TRX')
   };
 }
 
@@ -88,7 +134,7 @@ function getInitialFreshData() {
 
 function normalizeData(data) {
   const base = getInitialFreshData();
-  const normalized = {
+  const normalized = ensureUniqueIds({
     ...base,
     ...data,
     theme: data?.theme || 'light',
@@ -101,7 +147,7 @@ function normalizeData(data) {
     categories: Array.isArray(data?.categories) ? data.categories : base.categories,
     customers: Array.isArray(data?.customers) ? data.customers : base.customers,
     sales: Array.isArray(data?.sales) ? data.sales : base.sales
-  };
+  });
 
   return normalized;
 }
