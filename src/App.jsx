@@ -759,15 +759,10 @@ export default function App() {
   const [restockQty, setRestockQty] = useState('');
   const [restockCostPrice, setRestockCostPrice] = useState('');
   const [restockRetailPrice, setRestockRetailPrice] = useState('');
-  // Special prices are edited here in Stock In rather than in the product form.
-  const [restockHasTingi, setRestockHasTingi] = useState(false);
-  const [restockTingiPrice, setRestockTingiPrice] = useState('');
-  const [restockTingiRatio, setRestockTingiRatio] = useState(1);
-  const [restockHasPautang, setRestockHasPautang] = useState(false);
-  const [restockPautangPrice, setRestockPautangPrice] = useState('');
 
   // Utang Customer CRUD Modals State
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState(null); // null = Add, Object = Edit
   const [isPabayadModalOpen, setIsPabayadModalOpen] = useState(false);
   const [selectedCustomerForPayment, setSelectedCustomerForPayment] = useState(null);
   const [pabayadAmount, setPabayadAmount] = useState('');
@@ -1258,6 +1253,152 @@ export default function App() {
     showToast(`Order ${orderId} has been Voided & restocked`, 'warning');
   };
 
+  // Edit an already-recorded sale (Sales Logs).
+  const handleUpdateSale = (orderId, patch) => {
+    const order = salesHistory.find((s) => s.id === orderId);
+    if (!order) return;
+
+    if (order.status === 'Voided') {
+      showToast('Voided sales can no longer be edited.', 'error');
+      return;
+    }
+
+    const parsedTotal = Number(patch.totalPrice);
+    if (Number.isNaN(parsedTotal) || parsedTotal < 0) {
+      showToast('Enter a valid total amount.', 'error');
+      return;
+    }
+
+    const nextTotal = roundMoney(parsedTotal);
+    const nextMethod = patch.paymentMethod || order.paymentMethod;
+    const isUtang = nextMethod === 'Utang';
+
+    if (isUtang && !patch.customerId && !order.customerId) {
+      showToast('Pumili ng Suki para sa Utang.', 'error');
+      return;
+    }
+
+    if (nextMethod === 'Pautang' && order.paymentMethod !== 'Pautang') {
+      showToast('Ang bagong Pautang ay itinatalagang sa Register. Cash/Utang lang ang pwede dito.', 'error');
+      return;
+    }
+
+    const nextCustomerId = isUtang
+      ? (patch.customerId || order.customerId)
+      // A Pautang payout stays linked to its Suki even when other fields change.
+      : (nextMethod === 'Pautang' ? order.customerId : null);
+    const nextCustomer = nextCustomerId ? customers.find((c) => c.id === nextCustomerId) : null;
+    const nextCustomerName = nextMethod === 'Cash'
+      ? (patch.customerName || order.customerName)
+      : (nextCustomer ? nextCustomer.name : (patch.customerName || order.customerName));
+
+    const hadUtangEntry = customers.some((c) =>
+      (Array.isArray(c.ledger) ? c.ledger : []).some((e) => e.orderId === orderId && e.type === 'sale')
+    );
+
+    // Re-point the Utang ledger so the customer balance matches the sale.
+    if (hadUtangEntry || isUtang) {
+      setCustomers((prev) =>
+        prev.map((cust) => {
+          const ledger = Array.isArray(cust.ledger) ? cust.ledger : [];
+          const linked = ledger.filter((e) => e.orderId === orderId && e.type === 'sale');
+          if (linked.length === 0 && !(isUtang && cust.id === nextCustomerId)) return normalizeCustomer(cust);
+
+          let balance = Number(cust.balance) || 0;
+          linked.forEach((entry) => { balance -= Number(entry.amount) || 0; });
+
+          let nextLedger = ledger.filter((e) => !(e.orderId === orderId && e.type === 'sale'));
+
+          if (isUtang && cust.id === nextCustomerId) {
+            balance += nextTotal;
+            nextLedger = [
+              {
+                id: createUniqueId('L'),
+                type: 'sale',
+                amount: nextTotal,
+                date: order.timestamp || new Date().toISOString(),
+                description: `Utang for ${nextCustomerName}`,
+                orderId,
+                items: Array.isArray(order.items) ? order.items : []
+              },
+              ...nextLedger
+            ];
+          }
+
+          return normalizeCustomer({ ...cust, balance: roundMoney(balance), ledger: nextLedger });
+        })
+      );
+    }
+
+    // Keep an existing Pautang payout in sync, or cancel it when the method changes.
+    if (order.paymentMethod === 'Pautang' && order.customerId) {
+      const voidRecord = nextMethod !== 'Pautang';
+      setCustomers((prev) =>
+        prev.map((cust) => {
+          if (cust.id !== order.customerId) return normalizeCustomer(cust);
+
+          const records = Array.isArray(cust.pautang) ? cust.pautang : [];
+          const target = records.find((record) => record.orderId === orderId);
+          if (!target) return normalizeCustomer(cust);
+
+          const nextRecord = voidRecord
+            ? normalizePautangRecord({
+              ...target,
+              totalPrice: 0,
+              paid: 0,
+              balance: 0,
+              status: 'Voided',
+              instalments: [],
+              voidedAt: new Date().toISOString()
+            })
+            : normalizePautangRecord({
+              ...target,
+              totalPrice: nextTotal,
+              instalments: rebuildInstalments(target, nextTotal)
+            });
+
+          return normalizeCustomer({
+            ...cust,
+            pautang: records.map((record) => (record.id === target.id ? nextRecord : record))
+          });
+        })
+      );
+    }
+
+    // Keep subtotal / discount consistent with the edited total.
+    const oldSubtotal = Number(order.subtotal) || nextTotal;
+    const nextDiscount = nextTotal <= oldSubtotal ? roundMoney(oldSubtotal - nextTotal) : 0;
+    const nextSubtotal = nextTotal <= oldSubtotal ? oldSubtotal : nextTotal;
+
+    const tendered = nextMethod === 'Cash'
+      ? Math.max(Number(order.tendered) || 0, nextTotal)
+      : nextTotal;
+
+    setSalesHistory((prev) =>
+      prev.map((s) =>
+        s.id === orderId
+          ? {
+            ...s,
+            customerName: nextCustomerName,
+            customerId: nextCustomerId,
+            paymentMethod: nextMethod,
+            subtotal: nextSubtotal,
+            discount: nextDiscount,
+            totalAmount: nextTotal,
+            tendered,
+            change: nextMethod === 'Cash' ? roundMoney(tendered - nextTotal) : 0,
+            editedAt: new Date().toISOString()
+          }
+          : s
+      )
+    );
+
+    // The receipt modal, if open, should show the fresh record.
+    setLastCompletedOrder((prev) => (prev && prev.id === orderId ? { ...prev, totalAmount: nextTotal } : prev));
+
+    showToast(`Sale ${orderId} updated.`);
+  };
+
   // Pautang Instalment Payments
   const handleOpenPautangPay = (customer, record) => {
     setPautangTargetRecord({ customerId: customer.id, recordId: record.id });
@@ -1369,16 +1510,11 @@ export default function App() {
         prev.map((p) => {
           if (p.id !== editingProduct.id) return p;
 
-          // Tingi / Pautang pricing is owned by the Stock In form. Carry the
-          // existing values over so editing a product never wipes them.
+          // Tingi / Pautang pricing is owned by the Add/Edit product form now,
+          // so the submitted values win and stock history is carried over.
           return normalizeProduct({
             ...p,
-            ...normalizedProduct,
-            hasTingi: p.hasTingi,
-            tingiPrice: p.tingiPrice,
-            tingiRatio: p.tingiRatio,
-            hasPautang: p.hasPautang,
-            pautangPrice: p.pautangPrice
+            ...normalizedProduct
           });
         })
       );
@@ -1400,17 +1536,240 @@ export default function App() {
     }
   };
 
+  // Inventory ledger CRUD -------------------------------------------------
+  // An encoded movement can be corrected or removed; the on-hand stock is
+  // always re-derived so the ledger stays the source of truth.
+  const handleLedgerEdit = (productId, entryId, patch) => {
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== productId) return p;
+
+        const ledger = Array.isArray(p.stockLedger) ? p.stockLedger : [];
+        const target = ledger.find((entry) => entry.id === entryId);
+        if (!target) return p;
+
+        const nextQuantity = Number(patch.quantity);
+        if (Number.isNaN(nextQuantity)) return p;
+
+        const delta = nextQuantity - (Number(target.quantity) || 0);
+
+        return normalizeProduct({
+          ...p,
+          stock: Math.round(((Number(p.stock) || 0) + delta) * 100) / 100,
+          stockLedger: ledger.map((entry) =>
+            entry.id === entryId
+              ? {
+                ...entry,
+                quantity: nextQuantity,
+                description: patch.description !== undefined ? patch.description : entry.description,
+                editedAt: new Date().toISOString()
+              }
+              : entry
+          )
+        });
+      })
+    );
+
+    showToast('Inventory ledger entry updated.');
+  };
+
+  const handleLedgerDelete = (productId, entryId) => {
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== productId) return p;
+
+        const ledger = Array.isArray(p.stockLedger) ? p.stockLedger : [];
+        const target = ledger.find((entry) => entry.id === entryId);
+        if (!target) return p;
+
+        const quantity = Number(target.quantity) || 0;
+
+        return normalizeProduct({
+          ...p,
+          stock: Math.round(((Number(p.stock) || 0) - quantity) * 100) / 100,
+          stockLedger: ledger.filter((entry) => entry.id !== entryId)
+        });
+      })
+    );
+
+    showToast('Inventory ledger entry deleted.', 'warning');
+  };
+
+  // Utang / Pautang ledger CRUD ------------------------------------------
+  // A 'sale' entry raises the balance, a 'payment' / void entry lowers it.
+  const utangEntrySign = (type) => {
+    if (type === 'payment' || type === 'voided_sale') return -1;
+    return 1;
+  };
+
+  const handleUpdateUtangEntry = (customerId, entryId, patch) => {
+    setCustomers((prev) =>
+      prev.map((cust) => {
+        if (cust.id !== customerId) return normalizeCustomer(cust);
+
+        const ledger = Array.isArray(cust.ledger) ? cust.ledger : [];
+        const target = ledger.find((entry) => entry.id === entryId);
+        if (!target) return normalizeCustomer(cust);
+
+        const nextAmount = Number(patch.amount);
+        if (Number.isNaN(nextAmount) || nextAmount < 0) return normalizeCustomer(cust);
+
+        const sign = utangEntrySign(target.type);
+        const delta = (nextAmount - (Number(target.amount) || 0)) * sign;
+
+        return normalizeCustomer({
+          ...cust,
+          balance: roundMoney((Number(cust.balance) || 0) + delta),
+          ledger: ledger.map((entry) =>
+            entry.id === entryId
+              ? {
+                ...entry,
+                amount: nextAmount,
+                description: patch.description !== undefined ? patch.description : entry.description,
+                editedAt: new Date().toISOString()
+              }
+              : entry
+          )
+        });
+      })
+    );
+
+    showToast('Utang entry updated.');
+  };
+
+  const handleDeleteUtangEntry = (customerId, entryId) => {
+    setCustomers((prev) =>
+      prev.map((cust) => {
+        if (cust.id !== customerId) return normalizeCustomer(cust);
+
+        const ledger = Array.isArray(cust.ledger) ? cust.ledger : [];
+        const target = ledger.find((entry) => entry.id === entryId);
+        if (!target) return normalizeCustomer(cust);
+
+        const effect = (Number(target.amount) || 0) * utangEntrySign(target.type);
+
+        return normalizeCustomer({
+          ...cust,
+          balance: roundMoney((Number(cust.balance) || 0) - effect),
+          ledger: ledger.filter((entry) => entry.id !== entryId)
+        });
+      })
+    );
+
+    showToast('Utang entry deleted.', 'warning');
+  };
+
+  /** Re-splits the outstanding balance across the unpaid instalment slots. */
+  const rebuildInstalments = (record, newTotal) => {
+    const paid = Number(record.paid) || 0;
+    const newBalance = Math.max(0, roundMoney((Number(newTotal) || 0) - paid));
+    const instalments = Array.isArray(record.instalments) ? record.instalments : [];
+
+    if (newBalance <= 0) return instalments;
+
+    const unpaid = instalments.filter((instalment) => !instalment.paid);
+
+    if (unpaid.length === 0) {
+      return buildInstalmentSchedule(newBalance, Math.max(1, instalments.length)).map((amount, index) => ({
+        id: createUniqueId('PAUTI'),
+        index: index + 1,
+        amount,
+        amountPaid: 0,
+        paid: false,
+        paidAt: null
+      }));
+    }
+
+    let remaining = newBalance;
+    return instalments.map((instalment, index) => {
+      if (instalment.paid) return instalment;
+
+      const isLastUnpaid = instalments.slice(index + 1).every((later) => later.paid);
+      const amount = isLastUnpaid ? remaining : roundMoney(newBalance / unpaid.length);
+      remaining = roundMoney(remaining - amount);
+
+      return { ...instalment, amount };
+    });
+  };
+
+  const handleUpdatePautangRecord = (customerId, recordId, patch) => {
+    // Validate up front: state updaters run later, so they cannot be used to
+    // decide whether the linked sale needs re-syncing.
+    const targetCustomer = customers.find((cust) => cust.id === customerId);
+    const targetRecord = (Array.isArray(targetCustomer?.pautang) ? targetCustomer.pautang : [])
+      .find((record) => record.id === recordId);
+
+    if (!targetRecord || targetRecord.status === 'Voided') {
+      showToast('Hindi ma-edit ang record na ito.', 'error');
+      return;
+    }
+
+    const parsed = Number(patch.totalPrice);
+    if (Number.isNaN(parsed) || parsed < 0) {
+      showToast('Enter a valid total amount.', 'error');
+      return;
+    }
+
+    const nextTotal = roundMoney(parsed);
+
+    setCustomers((prev) =>
+      prev.map((cust) => {
+        if (cust.id !== customerId) return normalizeCustomer(cust);
+
+        const records = Array.isArray(cust.pautang) ? cust.pautang : [];
+        const target = records.find((record) => record.id === recordId);
+        if (!target || target.status === 'Voided') return normalizeCustomer(cust);
+
+        const nextRecord = normalizePautangRecord({
+          ...target,
+          totalPrice: nextTotal,
+          description: patch.description !== undefined ? patch.description : target.description,
+          instalments: rebuildInstalments(target, nextTotal)
+        });
+
+        return normalizeCustomer({
+          ...cust,
+          pautang: records.map((record) => (record.id === recordId ? nextRecord : record))
+        });
+      })
+    );
+
+    // Keep the linked sale total in step with the edited payout.
+    if (targetRecord.orderId) {
+      const syncOrderId = targetRecord.orderId;
+      setSalesHistory((prev) =>
+        prev.map((sale) =>
+          sale.id === syncOrderId && sale.status !== 'Voided'
+            ? { ...sale, totalAmount: nextTotal }
+            : sale
+        )
+      );
+    }
+
+    showToast('Pautang record updated.');
+  };
+
+  const handleDeletePautangRecord = (customerId, recordId) => {
+    setCustomers((prev) =>
+      prev.map((cust) => {
+        if (cust.id !== customerId) return normalizeCustomer(cust);
+
+        const records = Array.isArray(cust.pautang) ? cust.pautang : [];
+        return normalizeCustomer({
+          ...cust,
+          pautang: records.filter((record) => record.id !== recordId)
+        });
+      })
+    );
+
+    showToast('Pautang record deleted.', 'warning');
+  };
+
   const handleOpenRestock = (product) => {
     setRestockProduct(product);
     setRestockQty('');
     setRestockCostPrice('');
     setRestockRetailPrice('');
-    // Seed the special-price fields from the product's current values.
-    setRestockHasTingi(Boolean(product.hasTingi));
-    setRestockTingiPrice(product.tingiPrice ? String(product.tingiPrice) : '');
-    setRestockTingiRatio(Number(product.tingiRatio) > 0 ? Number(product.tingiRatio) : 1);
-    setRestockHasPautang(Boolean(product.hasPautang));
-    setRestockPautangPrice(product.pautangPrice ? String(product.pautangPrice) : '');
     setIsRestockModalOpen(true);
   };
 
@@ -1423,9 +1782,6 @@ export default function App() {
 
     const nextCost = parseFloat(restockCostPrice);
     const nextRetail = parseFloat(restockRetailPrice);
-    const nextTingiPrice = parseFloat(restockTingiPrice);
-    const nextTingiRatio = Number(restockTingiRatio) || 1;
-    const nextPautangPrice = parseFloat(restockPautangPrice);
 
     setProducts((prev) =>
       prev.map((p) => {
@@ -1436,17 +1792,6 @@ export default function App() {
           stock: (Number(p.stock) || 0) + qty,
           costPrice: Number.isNaN(nextCost) ? Number(p.costPrice) || 0 : nextCost,
           retailPrice: Number.isNaN(nextRetail) ? Number(p.retailPrice) || 0 : nextRetail,
-          // Tingi pricing is configured here in Stock In.
-          hasTingi: restockHasTingi,
-          tingiPrice: restockHasTingi
-            ? (Number.isNaN(nextTingiPrice) ? Number(p.tingiPrice) || 0 : nextTingiPrice)
-            : 0,
-          tingiRatio: nextTingiRatio > 0 ? nextTingiRatio : Number(p.tingiRatio) || 1,
-          // Pautang pricing is configured here in Stock In.
-          hasPautang: restockHasPautang,
-          pautangPrice: restockHasPautang
-            ? (Number.isNaN(nextPautangPrice) ? Number(p.pautangPrice) || 0 : nextPautangPrice)
-            : 0,
           stockLedger: [
             {
               id: createUniqueId('STK'),
@@ -1474,6 +1819,25 @@ export default function App() {
 
   // Utang Customer CRUD & Payment Handlers
   const handleSaveCustomer = (custData) => {
+    if (editingCustomer) {
+      setCustomers((prev) =>
+        prev.map((cust) =>
+          cust.id === editingCustomer.id
+            ? normalizeCustomer({
+              ...cust,
+              name: custData.name,
+              phone: custData.phone,
+              notes: custData.notes
+            })
+            : cust
+        )
+      );
+      showToast(`Updated Suki: ${custData.name}`);
+      setIsCustomerModalOpen(false);
+      setEditingCustomer(null);
+      return;
+    }
+
     const newCust = normalizeCustomer({
       ...custData,
       id: createUniqueId('C'),
@@ -1720,6 +2084,8 @@ export default function App() {
               }}
               onDeleteProduct={handleDeleteProduct}
               onRestock={handleOpenRestock}
+              onLedgerEdit={handleLedgerEdit}
+              onLedgerDelete={handleLedgerDelete}
             />
           )}
 
@@ -1727,7 +2093,19 @@ export default function App() {
             <UtangLedgerView
               theme={theme}
               customers={customers}
-              onAddCustomer={() => setIsCustomerModalOpen(true)}
+              salesHistory={salesHistory}
+              onAddCustomer={() => {
+                setEditingCustomer(null);
+                setIsCustomerModalOpen(true);
+              }}
+              onEditCustomer={(customer) => {
+                setEditingCustomer(customer);
+                setIsCustomerModalOpen(true);
+              }}
+              onUpdateEntry={handleUpdateUtangEntry}
+              onDeleteEntry={handleDeleteUtangEntry}
+              onUpdatePautang={handleUpdatePautangRecord}
+              onDeletePautang={handleDeletePautangRecord}
               onPautangPay={handleOpenPautangPay}
               onPabayad={(c) => {
                 setSelectedCustomerForPayment(c);
@@ -1740,7 +2118,9 @@ export default function App() {
             <SalesHistoryView
               theme={theme}
               sales={salesHistory}
+              customers={customers}
               onVoidOrder={handleVoidOrder}
+              onEditOrder={handleUpdateSale}
               onViewReceipt={(order) => {
                 setLastCompletedOrder(order);
                 setPaymentStep('receipt');
@@ -1871,16 +2251,6 @@ export default function App() {
             setRestockCostPrice={setRestockCostPrice}
             restockRetailPrice={restockRetailPrice}
             setRestockRetailPrice={setRestockRetailPrice}
-            restockHasTingi={restockHasTingi}
-            setRestockHasTingi={setRestockHasTingi}
-            restockTingiPrice={restockTingiPrice}
-            setRestockTingiPrice={setRestockTingiPrice}
-            restockTingiRatio={restockTingiRatio}
-            setRestockTingiRatio={setRestockTingiRatio}
-            restockHasPautang={restockHasPautang}
-            setRestockHasPautang={setRestockHasPautang}
-            restockPautangPrice={restockPautangPrice}
-            setRestockPautangPrice={setRestockPautangPrice}
             onConfirm={handleRestockSubmit}
             onClose={() => setIsRestockModalOpen(false)}
           />
@@ -1890,8 +2260,12 @@ export default function App() {
         {isCustomerModalOpen && (
           <CustomerFormModal
             theme={theme}
+            customer={editingCustomer}
             onSave={handleSaveCustomer}
-            onClose={() => setIsCustomerModalOpen(false)}
+            onClose={() => {
+              setIsCustomerModalOpen(false);
+              setEditingCustomer(null);
+            }}
           />
         )}
 
@@ -2023,16 +2397,20 @@ function NavTabButton({ icon: Icon, label, isActive, onClick, badge, theme }) {
 function RegisterView({ theme, products, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, addToCart, cart, totalAmount, setIsCartOpen, onBarcodeScan, scanIntervalMs }) {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [cameraError, setCameraError] = useState('');
-  const [isScannerOpen, setIsScannerOpen] = useState(true);
+  // The scanner starts closed; the user opens it with the Scan button.
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const videoRef = useRef(null);
   const lastDetectedAtRef = useRef(0);
 
   const filteredProducts = useMemo(() => {
-    return products.filter((p) => {
-      const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
-      const matchSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.barcode && p.barcode.includes(searchQuery));
-      return matchCat && matchSearch;
-    });
+    return products
+      .filter((p) => {
+        const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
+        const matchSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.barcode && p.barcode.includes(searchQuery));
+        return matchCat && matchSearch;
+      })
+      // Always listed A -> Z so items are easy to find.
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
   }, [products, selectedCategory, searchQuery]);
 
   useEffect(() => {
@@ -2789,8 +3167,49 @@ function ScanQuantityModal({ theme, product, quantity, setQuantity, onConfirm, o
   );
 }
 
-function InventoryItemModal({ theme, product, onClose }) {
+function InventoryItemModal({ theme, product, onClose, onEditEntry, onDeleteEntry }) {
   const stockLedger = Array.isArray(product.stockLedger) ? product.stockLedger : [];
+
+  // Inline editor for one encoded ledger row.
+  const [editingId, setEditingId] = useState(null);
+  const [editQuantity, setEditQuantity] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editError, setEditError] = useState('');
+
+  const startEdit = (entry) => {
+    setEditingId(entry.id);
+    setEditQuantity(String(Number(entry.quantity) || 0));
+    setEditDescription(entry.description || '');
+    setEditError('');
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditQuantity('');
+    setEditDescription('');
+    setEditError('');
+  };
+
+  const saveEdit = (entry) => {
+    const nextQuantity = parseFloat(editQuantity);
+    if (isNaN(nextQuantity)) {
+      setEditError('Enter a valid quantity.');
+      return;
+    }
+
+    onEditEntry?.(product.id, entry.id, {
+      quantity: nextQuantity,
+      description: editDescription.trim()
+    });
+    cancelEdit();
+  };
+
+  const removeEntry = (entry) => {
+    const label = entry.description || entry.type || 'entry';
+    if (!window.confirm(`Delete "${label}" from the inventory ledger? The product stock will be corrected.`)) return;
+    onDeleteEntry?.(product.id, entry.id);
+    cancelEdit();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-xs animate-fade-in">
@@ -2826,8 +3245,68 @@ function InventoryItemModal({ theme, product, onClose }) {
           ) : (
             stockLedger.map((entry) => {
               const isIncrease = Number(entry.quantity) > 0;
+              const isEditing = editingId === entry.id;
+              const cardClass = `rounded-2xl border p-3 ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}`;
+
+              if (isEditing) {
+                return (
+                  <div key={entry.id} className={cardClass}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${isIncrease ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                        {entry.type || (isIncrease ? 'Stock in' : 'Sale')}
+                      </span>
+                      <p className="text-[10px] text-slate-400">{new Date(entry.date).toLocaleString()}</p>
+                    </div>
+
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold text-slate-500">Quantity ({product.unit})</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={editQuantity}
+                          onChange={(e) => setEditQuantity(e.target.value)}
+                          className={`w-full p-2 rounded-xl border font-bold outline-none ${
+                            theme === 'dark' ? 'bg-slate-900 border-slate-600' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold text-slate-500">Description</label>
+                        <input
+                          type="text"
+                          value={editDescription}
+                          onChange={(e) => setEditDescription(e.target.value)}
+                          className={`w-full p-2 rounded-xl border font-bold outline-none ${
+                            theme === 'dark' ? 'bg-slate-900 border-slate-600' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        />
+                      </div>
+                      {editError && <p className="text-[10px] font-bold text-red-500">{editError}</p>}
+                    </div>
+
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="flex-1 rounded-xl border border-slate-300 py-2 text-xs font-black dark:border-slate-600"
+                      >
+                        Kanselahin
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => saveEdit(entry)}
+                        className="flex-1 rounded-xl bg-amber-500 py-2 text-xs font-black text-white"
+                      >
+                        I-save
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
-                <div key={entry.id} className={`rounded-2xl border p-3 ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white'}`}>
+                <div key={entry.id} className={cardClass}>
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <span className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${isIncrease ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
@@ -2841,6 +3320,25 @@ function InventoryItemModal({ theme, product, onClose }) {
                   </div>
                   <p className="mt-2 text-[10px] font-bold text-slate-500 dark:text-slate-300">{entry.description || 'Inventory movement'}</p>
                   {entry.reference && <p className="text-[9px] text-slate-400">Ref: {entry.reference}</p>}
+
+                  <div className="mt-2 flex justify-end gap-1 border-t border-slate-100 pt-2 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => startEdit(entry)}
+                      className="p-1.5 text-slate-400 hover:text-amber-500"
+                      aria-label={`Edit ${entry.description || 'ledger entry'}`}
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeEntry(entry)}
+                      className="p-1.5 text-slate-400 hover:text-red-500"
+                      aria-label={`Delete ${entry.description || 'ledger entry'}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })
@@ -2855,8 +3353,29 @@ function InventoryItemModal({ theme, product, onClose }) {
   );
 }
 
-function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditProduct, onDeleteProduct, onRestock }) {
-  const [viewingProduct, setViewingProduct] = useState(null);
+function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditProduct, onDeleteProduct, onRestock, onLedgerEdit, onLedgerDelete }) {
+  const [viewingProductId, setViewingProductId] = useState(null);
+  const [search, setSearch] = useState('');
+
+  // Always derived from the live product list so an edited ledger row stays in
+  // sync (a snapshot would go stale as soon as App state changes).
+  const viewingProduct = viewingProductId
+    ? products.find((p) => p.id === viewingProductId) || null
+    : null;
+
+  const visibleProducts = useMemo(() => {
+    const term = String(search || '').trim().toLowerCase();
+    return [...products]
+      .filter((p) => {
+        if (!term) return true;
+        return (
+          String(p.name || '').toLowerCase().includes(term) ||
+          String(p.category || '').toLowerCase().includes(term) ||
+          String(p.barcode || '').includes(term)
+        );
+      })
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+  }, [products, search]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col p-3 pb-6">
@@ -2874,8 +3393,33 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
         </button>
       </div>
 
+      <div className="relative mt-3 shrink-0">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Hanapin: pangalan, kategorya, barcode..."
+          className={`w-full pl-10 pr-9 py-2.5 rounded-2xl text-xs font-semibold border outline-none transition ${
+            theme === 'dark'
+              ? 'bg-slate-800/90 border-slate-700 text-white placeholder-slate-500 focus:border-amber-500'
+              : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500 shadow-xs'
+          }`}
+        />
+        {search && (
+          <button
+            type="button"
+            onClick={() => setSearch('')}
+            aria-label="Clear search"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
       <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
-        {products.map((p) => {
+        {visibleProducts.map((p) => {
           const isLow = p.stock <= p.reorderLevel;
           return (
             <div
@@ -2914,7 +3458,7 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
 
                 <div className="flex items-center space-x-1 pl-1 border-l border-slate-200 dark:border-slate-800">
                   <button
-                    onClick={() => setViewingProduct(p)}
+                    onClick={() => setViewingProductId(p.id)}
                     className="p-1 text-slate-400 hover:text-amber-500"
                     aria-label={`View inventory for ${p.name}`}
                   >
@@ -2931,13 +3475,22 @@ function ProductsCRUDView({ theme, products, categories, onAddProduct, onEditPro
             </div>
           );
         })}
+
+        {visibleProducts.length === 0 && (
+          <div className="py-12 text-center text-slate-400 space-y-2">
+            <Package className="w-10 h-10 mx-auto stroke-1" />
+            <p className="text-xs font-medium">Walang nahanap na paninda.</p>
+          </div>
+        )}
       </div>
 
       {viewingProduct && (
         <InventoryItemModal
           theme={theme}
           product={viewingProduct}
-          onClose={() => setViewingProduct(null)}
+          onEditEntry={onLedgerEdit}
+          onDeleteEntry={onLedgerDelete}
+          onClose={() => setViewingProductId(null)}
         />
       )}
     </div>
@@ -2953,8 +3506,13 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
     stock: product?.stock || '',
     reorderLevel: product?.reorderLevel || 5,
     unit: product?.unit || 'pcs',
-    barcode: product?.barcode || ''
-    // Tingi / Pautang pricing is not part of this form - it lives in Stock In.
+    barcode: product?.barcode || '',
+    // Tingi / Pautang pricing is edited right here alongside the regular price.
+    hasTingi: Boolean(product?.hasTingi),
+    tingiPrice: product?.tingiPrice || '',
+    tingiRatio: Number(product?.tingiRatio) > 0 ? Number(product.tingiRatio) : 1,
+    hasPautang: Boolean(product?.hasPautang),
+    pautangPrice: product?.pautangPrice || ''
   });
   const [cameraError, setCameraError] = useState('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -3034,9 +3592,11 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
       costPrice: parseFloat(formData.costPrice) || 0,
       retailPrice: parseFloat(formData.retailPrice) || 0,
       stock: parseFloat(formData.stock) || 0,
-      reorderLevel: parseFloat(formData.reorderLevel) || 5
-      // Tingi / Pautang pricing is intentionally NOT sent from here: it is
-      // owned by the Stock In form and must not be reset on every edit.
+      reorderLevel: parseFloat(formData.reorderLevel) || 5,
+      // Tingi / Pautang pricing is owned by this form now.
+      tingiPrice: parseFloat(formData.tingiPrice) || 0,
+      tingiRatio: Number(formData.tingiRatio) > 0 ? Number(formData.tingiRatio) : 1,
+      pautangPrice: parseFloat(formData.pautangPrice) || 0
     });
   };
 
@@ -3083,16 +3643,40 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
             </div>
             <div>
               <label className="font-bold text-slate-500 block">Barcode</label>
-              <input
-                type="text"
-                value={formData.barcode}
-                onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
-                className={`w-full p-2 rounded-xl border font-bold ${
-                  theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                }`}
-              />
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={formData.barcode}
+                  onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                  className={`min-w-0 flex-1 p-2 rounded-xl border font-bold ${
+                    theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsScannerOpen((prev) => !prev)}
+                  aria-label={isScannerOpen ? 'Close barcode scanner' : 'Open barcode scanner'}
+                  className={`shrink-0 rounded-xl border p-2 transition ${
+                    isScannerOpen
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                      : 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-slate-800 dark:text-amber-300'
+                  }`}
+                >
+                  <QrCode className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
+
+          {cameraError && <p className="text-[10px] font-bold text-red-500">{cameraError}</p>}
+          {isScannerOpen && (
+            <div className="overflow-hidden rounded-xl border border-slate-300 bg-black dark:border-slate-700">
+              <video ref={videoRef} className="h-36 w-full object-cover" muted playsInline autoPlay />
+              <p className="px-2 py-1 text-[10px] font-bold text-emerald-300">
+                Ituro ang camera sa barcode...
+              </p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2">
             <div>
@@ -3119,10 +3703,78 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
             </div>
           </div>
 
-          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-            <p className="text-[10px] font-bold text-slate-400">
-              💡 Ang presyo ng Tingi at Pautang ay itinatago sa <span className="font-black">Stock In</span>.
-            </p>
+          <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div>
+              <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={formData.hasTingi}
+                  onChange={(e) => setFormData({ ...formData, hasTingi: e.target.checked })}
+                />
+                <span>May Benta na Tingi / Sachet?</span>
+              </label>
+
+              {formData.hasTingi && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Tingi (₱)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={formData.tingiPrice}
+                      onChange={(e) => setFormData({ ...formData, tingiPrice: e.target.value })}
+                      className={`w-full p-2 rounded-xl font-bold border outline-none ${
+                        theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold text-slate-500">1 pack = x sachets</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="1"
+                      value={formData.tingiRatio}
+                      onChange={(e) => setFormData({ ...formData, tingiRatio: e.target.value })}
+                      className={`w-full p-2 rounded-xl font-bold border outline-none ${
+                        theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                      }`}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={formData.hasPautang}
+                  onChange={(e) => setFormData({ ...formData, hasPautang: e.target.checked })}
+                />
+                <span>May Pautang Price?</span>
+              </label>
+
+              {formData.hasPautang && (
+                <div className="mt-2">
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Pautang (₱)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="Iba sa regular na presyo"
+                    value={formData.pautangPrice}
+                    onChange={(e) => setFormData({ ...formData, pautangPrice: e.target.value })}
+                    className={`w-full p-2 rounded-xl font-bold border outline-none ${
+                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
         </div>
@@ -3141,7 +3793,7 @@ function ProductFormModal({ theme, categories, product, onSave, onClose }) {
   );
 }
 
-function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, restockHasTingi, setRestockHasTingi, restockTingiPrice, setRestockTingiPrice, restockTingiRatio, setRestockTingiRatio, restockHasPautang, setRestockHasPautang, restockPautangPrice, setRestockPautangPrice, onConfirm, onClose }) {
+function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPrice, setRestockCostPrice, restockRetailPrice, setRestockRetailPrice, onConfirm, onClose }) {
   return (
     <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
       <div className="flex min-h-0 flex-1 flex-col">
@@ -3180,77 +3832,9 @@ function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPr
               theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
             }`}
           />
-          <div className="pt-1">
-            <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
-              <input
-                type="checkbox"
-                checked={restockHasTingi}
-                onChange={(e) => setRestockHasTingi(e.target.checked)}
-              />
-              <span>May Benta na Tingi / Sachet?</span>
-            </label>
-
-            {restockHasTingi && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Tingi (₱)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="0.00"
-                    value={restockTingiPrice}
-                    onChange={(e) => setRestockTingiPrice(e.target.value)}
-                    className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold text-slate-500">1 pack = x sachets</label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    placeholder="1"
-                    value={restockTingiRatio}
-                    onChange={(e) => setRestockTingiRatio(e.target.value)}
-                    className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-                      theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="pt-1">
-            <label className="flex items-center space-x-2 font-bold text-xs text-slate-600 dark:text-slate-300">
-              <input
-                type="checkbox"
-                checked={restockHasPautang}
-                onChange={(e) => setRestockHasPautang(e.target.checked)}
-              />
-              <span>May Pautang Price?</span>
-            </label>
-
-            {restockHasPautang && (
-              <div className="mt-2">
-                <label className="mb-1 block text-[10px] font-bold text-slate-500">Presyo ng Pautang (₱)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder="Iba sa regular na presyo"
-                  value={restockPautangPrice}
-                  onChange={(e) => setRestockPautangPrice(e.target.value)}
-                  className={`w-full p-2.5 rounded-2xl font-bold text-base border outline-none ${
-                    theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
-                  }`}
-                />
-              </div>
-            )}
-          </div>
+          <p className="text-[10px] font-bold text-slate-400">
+            💡 Ang Tingi at Pautang na presyo ay ini-edit sa <span className="font-black">Add / Edit na Paninda</span>.
+          </p>
         </div>
 
         <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
@@ -3269,7 +3853,11 @@ function RestockModal({ theme, product, restockQty, setRestockQty, restockCostPr
 }
 
 /** One Pautang payout row inside the sub-ledger, with progress and a pay action. */
-function PautangRecordCard({ theme, customer, record, onPay }) {
+function PautangRecordCard({ theme, customer, record, onPay, onEdit, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [totalPriceInput, setTotalPriceInput] = useState('');
+  const [descriptionInput, setDescriptionInput] = useState('');
+
   const instalments = Array.isArray(record.instalments) ? record.instalments : [];
   const paidCount = instalments.filter((instalment) => instalment.paid).length;
   const totalPrice = Number(record.totalPrice) || 0;
@@ -3282,8 +3870,86 @@ function PautangRecordCard({ theme, customer, record, onPay }) {
       ? 'bg-emerald-100 text-emerald-700'
       : 'bg-slate-200 text-slate-600';
 
+  const cardClass = `rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`;
+  const inputClass = `w-full p-2 rounded-xl border font-bold outline-none ${
+    theme === 'dark' ? 'bg-slate-900 border-slate-600' : 'bg-slate-50 border-slate-200'
+  }`;
+
+  const startEdit = () => {
+    setTotalPriceInput(String(Number(record.totalPrice) || 0));
+    setDescriptionInput(record.description || '');
+    setEditing(true);
+  };
+
+  const confirmDelete = () => {
+    if (!window.confirm(`Delete the Pautang record ${record.id}? It will be removed from this Suki's list.`)) return;
+    onDelete?.(customer, record);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className={cardClass}>
+        <div className="flex items-start justify-between gap-2">
+          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${statusTone}`}>
+            {record.status}
+          </span>
+          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">
+            {new Date(record.date).toLocaleDateString()} • {record.id}
+          </p>
+        </div>
+
+        <div className="mt-2 space-y-2">
+          <div>
+            <label className="mb-1 block text-[10px] font-bold text-slate-500">Kabuuang Halaga (₱)</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={totalPriceInput}
+              onChange={(e) => setTotalPriceInput(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-bold text-slate-500">Description</label>
+            <input
+              type="text"
+              value={descriptionInput}
+              onChange={(e) => setDescriptionInput(e.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <p className="text-[9px] font-bold text-slate-400">
+            Ang nabayaran ay nananatili; ang tira ay muling hahatiin sa mga tingan.
+          </p>
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            className="flex-1 rounded-xl border border-slate-300 py-2 text-xs font-black dark:border-slate-600"
+          >
+            Kanselahin
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onEdit?.(customer, record, { totalPrice: totalPriceInput, description: descriptionInput });
+              setEditing(false);
+            }}
+            className="flex-1 rounded-xl bg-indigo-600 py-2 text-xs font-black text-white"
+          >
+            I-save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`}>
+    <div className={cardClass}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${statusTone}`}>
@@ -3330,16 +3996,62 @@ function PautangRecordCard({ theme, customer, record, onPay }) {
           Magbayad ng Tingan
         </button>
       )}
+
+      <div className="mt-2 flex justify-end gap-1 border-t border-slate-100 pt-2 dark:border-slate-700">
+        <button
+          type="button"
+          onClick={startEdit}
+          className="p-1.5 text-slate-400 hover:text-amber-500"
+          aria-label={`Edit pautang ${record.id}`}
+        >
+          <Edit3 className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={confirmDelete}
+          className="p-1.5 text-slate-400 hover:text-red-500"
+          aria-label={`Delete pautang ${record.id}`}
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
 
-function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautangPay }) {
-  const [selectedCustomer, setSelectedCustomer] = useState(null);
+function UtangLedgerView({ theme, customers, salesHistory = [], onAddCustomer, onEditCustomer, onPabayad, onPautangPay, onUpdateEntry, onDeleteEntry, onUpdatePautang, onDeletePautang }) {
+  // Held as an id (not an object) so the open sheet always shows the latest
+  // values after an entry is edited.
+  const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [sheetTab, setSheetTab] = useState('utang');
+
+  // Inline editor for one Utang ledger row.
+  const [editingEntryId, setEditingEntryId] = useState(null);
+  const [entryAmount, setEntryAmount] = useState('');
+  const [entryDescription, setEntryDescription] = useState('');
+  const [entryError, setEntryError] = useState('');
+
+  const selectedCustomer = selectedCustomerId
+    ? customers.find((cust) => cust.id === selectedCustomerId) || null
+    : null;
 
   const totalOutstandingUtang = customers.reduce((a, b) => a + (Number(b.balance) || 0), 0);
   const totalOutstandingPautang = customers.reduce((a, b) => a + (Number(b.pautangBalance) || 0), 0);
+
+  // Any entry tied to a voided sale is history only - it is never listed here.
+  // That covers both the original `sale` charge and the `voided_sale` reversal.
+  const voidedOrderIds = new Set(
+    (Array.isArray(salesHistory) ? salesHistory : [])
+      .filter((sale) => sale?.status === 'Voided')
+      .map((sale) => sale?.id)
+      .filter(Boolean)
+  );
+  const isVoidedEntry = (entry) => (
+    entry?.status === 'Voided'
+    || entry?.type === 'voided_sale'
+    || entry?.voided === true
+    || (entry?.orderId != null && voidedOrderIds.has(entry.orderId))
+  );
 
   const allLedgerEntries = customers
     .flatMap((customer) =>
@@ -3351,17 +4063,36 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
         customerPhone: customer.phone || 'No contact'
       }))
     )
+    .filter((entry) => !isVoidedEntry(entry))
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const selectedCustomerEntries = selectedCustomer
-    ? [...(Array.isArray(selectedCustomer.ledger) ? selectedCustomer.ledger : [])].sort((a, b) => new Date(b.date) - new Date(a.date))
+    ? [...(Array.isArray(selectedCustomer.ledger) ? selectedCustomer.ledger : [])]
+      .filter((entry) => !isVoidedEntry(entry))
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
     : [];
 
   // Pautang lives in its own sub-ledger, kept apart from the Utang entries.
+  // Voided payouts are hidden as well.
   const selectedPautangRecords = selectedCustomer
     ? [...(Array.isArray(selectedCustomer.pautang) ? selectedCustomer.pautang : [])]
+      .filter((record) => record.status !== 'Voided')
       .sort((a, b) => new Date(b.date) - new Date(a.date))
     : [];
+
+  const startEntryEdit = (entry) => {
+    setEditingEntryId(entry.id);
+    setEntryAmount(String(Number(entry.amount) || 0));
+    setEntryDescription(entry.description || '');
+    setEntryError('');
+  };
+
+  const cancelEntryEdit = () => {
+    setEditingEntryId(null);
+    setEntryAmount('');
+    setEntryDescription('');
+    setEntryError('');
+  };
 
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
@@ -3399,19 +4130,38 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
             const balance = Number(customer.balance) || 0;
             const pautangBalance = Number(customer.pautangBalance) || 0;
             const ledger = Array.isArray(customer.ledger) ? customer.ledger : [];
-            const latestEntry = [...ledger].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            const visibleLedger = ledger.filter((entry) => !isVoidedEntry(entry));
+            const latestEntry = [...visibleLedger].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
 
             return (
-              <button
+              <div
                 key={customer.id}
-                type="button"
-                onClick={() => setSelectedCustomer(customer)}
-                className={`w-full rounded-2xl border p-3 text-left transition ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'} hover:border-amber-400`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedCustomerId(customer.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedCustomerId(customer.id);
+                  }
+                }}
+                className={`w-full cursor-pointer rounded-2xl border p-3 text-left transition ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-2xs'} hover:border-amber-400`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-black text-sm">{customer.name}</h3>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onEditCustomer(customer);
+                        }}
+                        aria-label={`Edit ${customer.name}`}
+                        className="p-1 text-slate-400 hover:text-amber-500"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
                       {balance > 0 && (
                         <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">
                           May Utang
@@ -3443,10 +4193,10 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                     {pautangBalance > 0 && (
                       <span className="block text-[11px] font-black text-indigo-600">₱{pautangBalance.toFixed(2)}</span>
                     )}
-                    <span className="text-[9px] text-slate-400">{ledger.length} record</span>
+                    <span className="text-[9px] text-slate-400">{visibleLedger.length} record</span>
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })
         )}
@@ -3460,7 +4210,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                 <p className="text-[10px] uppercase tracking-[0.2em] text-amber-500 font-bold">Suki Ledger</p>
                 <h3 className="mt-1 font-black text-lg">{selectedCustomer.name}</h3>
               </div>
-              <button onClick={() => setSelectedCustomer(null)} className="p-1 text-slate-400">
+              <button onClick={() => { setSelectedCustomerId(null); cancelEntryEdit(); }} className="p-1 text-slate-400">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -3514,6 +4264,9 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                       customer={selectedCustomer}
                       record={record}
                       onPay={onPautangPay}
+                      onEdit={(cust, target, patch) =>
+                        onUpdatePautang?.(cust.id, target.id, patch)}
+                      onDelete={(cust, target) => onDeletePautang?.(cust.id, target.id)}
                     />
                   ))
                 )}
@@ -3527,9 +4280,82 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
               ) : (
                 selectedCustomerEntries.map((entry) => {
                   const isPayment = entry.type === 'payment';
+                  const isEditing = editingEntryId === entry.id;
+                  const cardClass = `rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`;
+                  const inputClass = `w-full p-2 rounded-xl border font-bold outline-none ${
+                    theme === 'dark' ? 'bg-slate-900 border-slate-600' : 'bg-slate-50 border-slate-200'
+                  }`;
+
+                  if (isEditing) {
+                    return (
+                      <div key={entry.id} className={cardClass}>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isPayment ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {isPayment ? 'Bayad' : 'Utang'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">{new Date(entry.date).toLocaleDateString()}</span>
+                        </div>
+
+                        <div className="mt-2 space-y-2">
+                          <div>
+                            <label className="mb-1 block text-[10px] font-bold text-slate-500">Halaga (₱)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={entryAmount}
+                              onChange={(e) => setEntryAmount(e.target.value)}
+                              className={inputClass}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[10px] font-bold text-slate-500">Description</label>
+                            <input
+                              type="text"
+                              value={entryDescription}
+                              onChange={(e) => setEntryDescription(e.target.value)}
+                              className={inputClass}
+                            />
+                          </div>
+                          {entryError && <p className="text-[10px] font-bold text-red-500">{entryError}</p>}
+                          <p className="text-[9px] font-bold text-slate-400">
+                            Aayusin din ang balans ng suki batay sa bagong halaga.
+                          </p>
+                        </div>
+
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={cancelEntryEdit}
+                            className="flex-1 rounded-xl border border-slate-300 py-2 text-xs font-black dark:border-slate-600"
+                          >
+                            Kanselahin
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const amount = parseFloat(entryAmount);
+                              if (isNaN(amount) || amount < 0) {
+                                setEntryError('Enter a valid amount.');
+                                return;
+                              }
+                              onUpdateEntry?.(selectedCustomer.id, entry.id, {
+                                amount,
+                                description: entryDescription.trim()
+                              });
+                              cancelEntryEdit();
+                            }}
+                            className="flex-1 rounded-xl bg-amber-500 py-2 text-xs font-black text-white"
+                          >
+                            I-save
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
-                    <div key={entry.id} className={`rounded-2xl border p-3 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200 shadow-2xs'}`}>
+                    <div key={entry.id} className={cardClass}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isPayment ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
@@ -3559,6 +4385,29 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                       ) : (
                         <p className="mt-2 text-[10px] text-slate-400">Walang item list.</p>
                       )}
+
+                      <div className="mt-2 flex justify-end gap-1 border-t border-slate-100 pt-2 dark:border-slate-700">
+                        <button
+                          type="button"
+                          onClick={() => startEntryEdit(entry)}
+                          className="p-1.5 text-slate-400 hover:text-amber-500"
+                          aria-label={`Edit ${entry.description || 'utang entry'}`}
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!window.confirm(`Delete "${entry.description || 'this entry'}"? The Suki balance will be corrected.`)) return;
+                            onDeleteEntry?.(selectedCustomer.id, entry.id);
+                            cancelEntryEdit();
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-red-500"
+                          aria-label={`Delete ${entry.description || 'utang entry'}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })
@@ -3571,7 +4420,8 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                 <button
                   onClick={() => {
                     onPabayad(selectedCustomer);
-                    setSelectedCustomer(null);
+                    setSelectedCustomerId(null);
+                    cancelEntryEdit();
                   }}
                   className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-black text-sm"
                 >
@@ -3595,7 +4445,7 @@ function UtangLedgerView({ theme, customers, onAddCustomer, onPabayad, onPautang
                 </button>
               )}
               <button
-                onClick={() => setSelectedCustomer(null)}
+                onClick={() => { setSelectedCustomerId(null); cancelEntryEdit(); }}
                 className="flex-1 border border-slate-300 dark:border-slate-700 py-3 rounded-2xl font-black text-sm"
               >
                 Isara
@@ -3738,22 +4588,24 @@ function SettingsView({ theme, setTheme, storeProfile, scanIntervalMs, setScanIn
   );
 }
 
-function CustomerFormModal({ theme, onSave, onClose }) {
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [notes, setNotes] = useState('');
+function CustomerFormModal({ theme, customer, onSave, onClose }) {
+  const [name, setName] = useState(customer?.name || '');
+  const [phone, setPhone] = useState(customer?.phone || '');
+  const [notes, setNotes] = useState(customer?.notes || '');
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!name) return;
-    onSave({ name, phone, notes, balance: 0 });
+    onSave(customer ? { ...customer, name, phone, notes } : { name, phone, notes, balance: 0 });
   };
 
   return (
     <ModalShell theme={theme} onClose={onClose} maxWidth="max-w-xs">
       <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col text-xs">
         <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-          <h3 className="truncate font-black text-sm">I-rehistro ang Bagong Suki</h3>
+          <h3 className="truncate font-black text-sm">
+            {customer ? 'I-edit ang Suki' : 'I-rehistro ang Bagong Suki'}
+          </h3>
         </div>
 
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3">
@@ -3795,7 +4647,7 @@ function CustomerFormModal({ theme, onSave, onClose }) {
 
         <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
           <button type="submit" className="w-full bg-amber-500 text-white py-2.5 rounded-xl font-bold shadow-md">
-            I-save si Suki
+            {customer ? 'I-save ang Pagbabago' : 'I-save si Suki'}
           </button>
         </div>
       </form>
@@ -4026,7 +4878,52 @@ function PabayadModal({ theme, customer, pabayadAmount, setPabayadAmount, onConf
   );
 }
 
-function SalesHistoryView({ theme, sales, onVoidOrder, onViewReceipt }) {
+function SalesHistoryView({ theme, sales, customers = [], onVoidOrder, onViewReceipt, onEditOrder }) {
+  const [editingSale, setEditingSale] = useState(null);
+  const [formTotal, setFormTotal] = useState('');
+  const [formMethod, setFormMethod] = useState('Cash');
+  const [formCustomerId, setFormCustomerId] = useState('');
+  const [formCustomerName, setFormCustomerName] = useState('');
+  const [formError, setFormError] = useState('');
+
+  const inputClass = `w-full p-2 rounded-xl border font-bold outline-none ${
+    theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+  }`;
+
+  const startEdit = (sale) => {
+    setEditingSale(sale);
+    setFormTotal(String(Number(sale.totalAmount) || 0));
+    setFormMethod(sale.paymentMethod || 'Cash');
+    setFormCustomerId(sale.customerId || '');
+    setFormCustomerName(sale.customerName || '');
+    setFormError('');
+  };
+
+  const closeEdit = () => {
+    setEditingSale(null);
+    setFormError('');
+  };
+
+  const submitEdit = () => {
+    const total = parseFloat(formTotal);
+    if (isNaN(total) || total < 0) {
+      setFormError('Enter a valid total amount.');
+      return;
+    }
+    if (formMethod === 'Utang' && !formCustomerId) {
+      setFormError('Pumili ng Suki para sa Utang.');
+      return;
+    }
+
+    onEditOrder?.(editingSale.id, {
+      totalPrice: total,
+      paymentMethod: formMethod,
+      customerId: formCustomerId || null,
+      customerName: formCustomerName.trim()
+    });
+    closeEdit();
+  };
+
   return (
     <div className="p-3 space-y-3 flex-1 flex flex-col pb-6">
       <h2 className="font-black text-sm">Nakalipas na Benta (Sales Logs)</h2>
@@ -4065,8 +4962,11 @@ function SalesHistoryView({ theme, sales, onVoidOrder, onViewReceipt }) {
 
                 {!isVoid && (
                   <div className="flex items-center space-x-1">
-                    <button onClick={() => onViewReceipt(s)} className="p-1 text-slate-400 hover:text-amber-500">
+                    <button onClick={() => onViewReceipt(s)} className="p-1 text-slate-400 hover:text-amber-500" title="View Receipt">
                       <Receipt className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => startEdit(s)} className="p-1 text-slate-400 hover:text-amber-500" title="Edit Sale">
+                      <Edit3 className="w-3.5 h-3.5" />
                     </button>
                     <button onClick={() => onVoidOrder(s.id)} className="p-1 text-slate-400 hover:text-red-500" title="Void Order">
                       <RotateCcw className="w-3.5 h-3.5" />
@@ -4078,6 +4978,96 @@ function SalesHistoryView({ theme, sales, onVoidOrder, onViewReceipt }) {
           );
         })}
       </div>
+
+      {editingSale && (
+        <ModalShell theme={theme} onClose={closeEdit} maxWidth="max-w-xs">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="shrink-0 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+              <h3 className="truncate font-black text-sm">I-edit ang Benta</h3>
+              <p className="mt-0.5 text-xs text-slate-400">{editingSale.id} • {editingSale.customerName}</p>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-4 py-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold text-slate-500">Kabuuang Halaga (₱)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={formTotal}
+                  onChange={(e) => setFormTotal(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] font-bold text-slate-500">Paraan ng Bayad</label>
+                <select
+                  value={formMethod}
+                  onChange={(e) => setFormMethod(e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="Cash">Cash</option>
+                  <option value="Utang">Utang</option>
+                  <option value="Pautang" disabled={editingSale.paymentMethod !== 'Pautang'}>
+                    Pautang{editingSale.paymentMethod !== 'Pautang' ? ' (sa Register lang)' : ''}
+                  </option>
+                </select>
+              </div>
+
+              {formMethod === 'Utang' && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500">Suki</label>
+                  <select
+                    value={formCustomerId}
+                    onChange={(e) => setFormCustomerId(e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">— Pumili ng Suki —</option>
+                    {customers.map((cust) => (
+                      <option key={cust.id} value={cust.id}>{cust.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {formMethod === 'Cash' && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500">Pangalan ng Mamimili</label>
+                  <input
+                    type="text"
+                    value={formCustomerName}
+                    onChange={(e) => setFormCustomerName(e.target.value)}
+                    className={inputClass}
+                  />
+                </div>
+              )}
+
+              <p className="text-[9px] font-bold text-slate-400">
+                Aayusin din ang utang / pautang record ng suki kung magbabago ang bayad.
+              </p>
+              {formError && <p className="text-[10px] font-bold text-red-500">{formError}</p>}
+            </div>
+
+            <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="flex space-x-2">
+                <button
+                  onClick={closeEdit}
+                  className="flex-1 py-2 rounded-xl font-bold text-xs border border-slate-300 dark:border-slate-600"
+                >
+                  Kanselahin
+                </button>
+                <button
+                  onClick={submitEdit}
+                  className="flex-1 bg-amber-500 text-white py-2 rounded-xl font-bold text-xs shadow-md"
+                >
+                  I-save
+                </button>
+              </div>
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </div>
   );
 }
